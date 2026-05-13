@@ -102,6 +102,7 @@ class MainWindow(QMainWindow):
         # Apply loaded settings immediately so the proxy and button labels
         # reflect saved state without requiring the user to open the dialog.
         self._proxy.set_exclude_rules(self._settings.exclude_rules)
+        self._model.set_merge_enabled(self._settings.merge_same_time_tag)
         self._update_settings_button_label()
         self._apply_color_config()
         apply_theme(self._settings.theme)
@@ -377,6 +378,7 @@ class MainWindow(QMainWindow):
         self._proxy.modelReset.connect(self._update_status)
 
         self._table.customContextMenuRequested.connect(self._show_context_menu)
+        self._table.doubleClicked.connect(self._on_row_double_clicked)
         self._table.verticalScrollBar().sliderMoved.connect(self._on_manual_scroll)
 
         self._timeline.timestamp_selected.connect(self._jump_to_timestamp)
@@ -642,6 +644,14 @@ class MainWindow(QMainWindow):
         if rec:
             self._timeline.set_cursor_key(rec.timestamp[:17])
 
+    def _on_row_double_clicked(self, proxy_idx: QModelIndex) -> None:
+        if not proxy_idx.isValid():
+            return
+        src_idx = self._proxy.mapToSource(proxy_idx)
+        rec = self._model.record_at(src_idx.row())
+        if rec and not rec.is_sub_row and rec.sub_messages and len(rec.sub_messages) > 1:
+            self._model.toggle_expand(src_idx.row())
+
     # ================================================================== time range
     def _on_range_selected(self, from_key: str, to_key: str) -> None:
         """Called continuously while dragging and once on release."""
@@ -706,8 +716,9 @@ class MainWindow(QMainWindow):
         selected_rows = sorted({i.row() for i in self._table.selectedIndexes()})
 
         menu = QMenu(self)
+        _copy_msg = rec.sub_messages[0] if rec.sub_messages and not rec.is_sub_row else rec.message
         menu.addAction("Copy row", lambda: QApplication.clipboard().setText(
-            f"{rec.timestamp}  {rec.pid:>6}  {rec.tid:>6}  {rec.level}  {rec.tag}: {rec.message}"
+            f"{rec.timestamp}  {rec.pid:>6}  {rec.tid:>6}  {rec.level}  {rec.tag}: {_copy_msg}"
         ))
         if len(selected_rows) > 1:
             menu.addAction(
@@ -738,9 +749,13 @@ class MainWindow(QMainWindow):
                 self._proxy.index(row, 0), Qt.UserRole
             )
             if rec:
-                lines.append(
-                    f"{rec.timestamp}  {rec.pid:>6}  {rec.tid:>6}  {rec.level}  {rec.tag}: {rec.message}"
-                )
+                if rec.is_sub_row:
+                    lines.append(f"  {rec.message}")
+                else:
+                    msg = rec.sub_messages[0] if rec.sub_messages else rec.message
+                    lines.append(
+                        f"{rec.timestamp}  {rec.pid:>6}  {rec.tid:>6}  {rec.level}  {rec.tag}: {msg}"
+                    )
         if lines:
             QApplication.clipboard().setText("\n".join(lines))
 
@@ -899,6 +914,7 @@ class MainWindow(QMainWindow):
     def _apply_settings(self) -> None:
         apply_theme(self._settings.theme)
         self._proxy.set_exclude_rules(self._settings.exclude_rules)
+        self._model.set_merge_enabled(self._settings.merge_same_time_tag)
         self._settings.save()
         self._update_settings_button_label()
         self._update_status()

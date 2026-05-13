@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import List, Optional, Set, Tuple
+from typing import List, Optional, Set, Tuple, TYPE_CHECKING
 
 from PySide6.QtCore import (
     QAbstractTableModel,
@@ -44,6 +44,7 @@ class LogModel(QAbstractTableModel):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._records: List[LogRecord] = []
+        self._merge_enabled: bool = False
         # Modern monospaced font stack
         self._font = QFont("JetBrains Mono, Cascadia Code, Consolas, Menlo, monospace", 9)
         self._font.setStyleStrategy(QFont.PreferAntialias)
@@ -78,7 +79,13 @@ class LogModel(QAbstractTableModel):
             if col == COL_TID:     return rec.tid
             if col == COL_LEVEL:   return rec.level
             if col == COL_TAG:     return rec.tag
-            if col == COL_MSG:     return rec.message
+            if col == COL_MSG:
+                if rec.is_sub_row:
+                    return "  " + rec.message
+                if rec.sub_messages:
+                    indicator = "▼ " if rec._expanded else "▶ "
+                    return indicator + rec.sub_messages[0]
+                return rec.message
 
         elif role == Qt.BackgroundRole:
             if rec._cached_bg is not None:
@@ -190,8 +197,17 @@ class LogModel(QAbstractTableModel):
 
         self.layoutChanged.emit()
 
+    def set_merge_enabled(self, enabled: bool) -> None:
+        self._merge_enabled = enabled
+
     # ------------------------------------------------------------------ write
     def append_records(self, records: List[LogRecord]) -> None:
+        if not records:
+            return
+
+        if self._merge_enabled:
+            records = self._merge_batch(records)
+
         if not records:
             return
 
@@ -207,11 +223,101 @@ class LogModel(QAbstractTableModel):
         self._records.extend(records)
         self.endInsertRows()
 
+    def _find_tail(self) -> Tuple[Optional[LogRecord], int]:
+        """Return the last non-sub-row record and its source index."""
+        for i in range(len(self._records) - 1, -1, -1):
+            if not self._records[i].is_sub_row:
+                return self._records[i], i
+        return None, -1
+
+    def _merge_batch(self, records: List[LogRecord]) -> List[LogRecord]:
+        """Collapse consecutive same-(ts_key, tag) records in the batch,
+        then try to fold the first record into the model's tail."""
+        # Pass 1: collapse within the batch
+        collapsed: List[LogRecord] = []
+        for rec in records:
+            if (collapsed
+                    and collapsed[-1].timestamp[:17] == rec.timestamp[:17]
+                    and collapsed[-1].tag == rec.tag):
+                head = collapsed[-1]
+                if head.sub_messages is None:
+                    head.sub_messages = [head.message]
+                head.sub_messages.append(rec.message)
+                head.message = head.message + "\n" + rec.message
+            else:
+                collapsed.append(rec)
+
+        # Pass 2: fold first collapsed record into the model's tail if it matches
+        if collapsed:
+            tail, tail_src_row = self._find_tail()
+            first = collapsed[0]
+            if (tail is not None
+                    and not tail._expanded
+                    and tail.timestamp[:17] == first.timestamp[:17]
+                    and tail.tag == first.tag):
+                if tail.sub_messages is None:
+                    tail.sub_messages = [tail.message]
+                if first.sub_messages:
+                    tail.sub_messages.extend(first.sub_messages)
+                else:
+                    tail.sub_messages.append(first.message)
+                tail.message = "\n".join(tail.sub_messages)
+                head_idx = self.index(tail_src_row, COL_MSG)
+                self.dataChanged.emit(head_idx, head_idx, [Qt.DisplayRole])
+                collapsed = collapsed[1:]
+
+        return collapsed
+
+    def toggle_expand(self, source_row: int) -> None:
+        """Expand or collapse a merged head row in-place."""
+        if source_row < 0 or source_row >= len(self._records):
+            return
+        rec = self._records[source_row]
+        if rec.is_sub_row or not rec.sub_messages or len(rec.sub_messages) < 2:
+            return
+
+        if not rec._expanded:
+            sub_rows: List[LogRecord] = []
+            for msg in rec.sub_messages[1:]:
+                sub = LogRecord(
+                    row_id=rec.row_id,
+                    timestamp=rec.timestamp,
+                    pid=rec.pid,
+                    tid=rec.tid,
+                    level=rec.level,
+                    tag=rec.tag,
+                    message=msg,
+                )
+                sub.is_sub_row = True
+                sub._parent_rec = rec
+                sub_rows.append(sub)
+
+            insert_at = source_row + 1
+            self.beginInsertRows(QModelIndex(), insert_at, insert_at + len(sub_rows) - 1)
+            self._records[insert_at:insert_at] = sub_rows
+            rec._expanded = True
+            self.endInsertRows()
+        else:
+            end = source_row + 1
+            while end < len(self._records) and self._records[end].is_sub_row:
+                end += 1
+            if end > source_row + 1:
+                self.beginRemoveRows(QModelIndex(), source_row + 1, end - 1)
+                del self._records[source_row + 1:end]
+                rec._expanded = False
+                self.endRemoveRows()
+
+        head_idx = self.index(source_row, COL_MSG)
+        self.dataChanged.emit(head_idx, head_idx, [Qt.DisplayRole])
+
     def prune_oldest(self, count: int) -> None:
-        """Remove the first 'count' records from the model."""
+        """Remove the first 'count' records from the model, plus any trailing sub-rows."""
         if count <= 0 or not self._records:
             return
         actual = min(count, len(self._records))
+        # Don't orphan sub-rows that immediately follow the last pruned record
+        while actual < len(self._records) and self._records[actual].is_sub_row:
+            actual += 1
         self.beginRemoveRows(QModelIndex(), 0, actual - 1)
         del self._records[:actual]
         self.endRemoveRows()
@@ -386,6 +492,15 @@ class LogFilterProxy(QSortFilterProxyModel):
         rec = src.record_at(source_row)
         if rec is None:
             return False
+        # Sub-rows inherit their parent's filter result so they show/hide together
+        if rec.is_sub_row:
+            parent = rec._parent_rec
+            if parent is None:
+                return False
+            return self._accepts_record(parent)
+        return self._accepts_record(rec)
+
+    def _accepts_record(self, rec: "LogRecord") -> bool:
         if rec.level not in self._allowed:
             return False
         if self._tag_rx and not self._tag_rx.search(rec.tag):
@@ -398,7 +513,7 @@ class LogFilterProxy(QSortFilterProxyModel):
         if self._tag_set and rec.tag not in self._tag_set:
             return False
         if self._time_from or self._time_to:
-            ts_key = rec.timestamp[:17]   # "MM-DD HH:MM:SS"
+            ts_key = rec.timestamp[:17]
             if self._time_from and ts_key < self._time_from:
                 return False
             if self._time_to and ts_key > self._time_to:

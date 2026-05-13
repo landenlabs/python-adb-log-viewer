@@ -21,3 +21,9 @@ class LogRecord:
     _cached_fg: Optional["QColor"] = field(default=None, repr=False)
     # {column_index: [spans]}
     _cached_highlights: Optional[dict[int, list]] = field(default=None, repr=False)
+
+    # Merge / expand-collapse state (not persisted)
+    is_sub_row: bool = field(default=False, repr=False)       # display-only child row
+    sub_messages: Optional[list] = field(default=None, repr=False)  # all lines on head record
+    _parent_rec: Optional["LogRecord"] = field(default=None, repr=False)
+    _expanded: bool = field(default=False, repr=False)

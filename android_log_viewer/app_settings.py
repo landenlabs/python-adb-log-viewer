@@ -53,6 +53,7 @@ class AppSettings:
         self.level_bg: dict[str, str] = dict(DEFAULT_LEVEL_BG)
         self.color_rules: List[ColorRule] = []
         self.last_profile_name: str = ""
+        self.merge_same_time_tag: bool = False
 
     # ------------------------------------------------------------------ persistence
 
@@ -70,6 +71,7 @@ class AppSettings:
             "level_bg": self.level_bg,
             "color_rules": [r.to_dict() for r in self.color_rules],
             "last_profile_name": self.last_profile_name,
+            "merge_same_time_tag": self.merge_same_time_tag,
         }
 
     def save(self) -> None:
@@ -111,6 +113,8 @@ class AppSettings:
             ]
         if "last_profile_name" in data and isinstance(data["last_profile_name"], str):
             s.last_profile_name = data["last_profile_name"]
+        if "merge_same_time_tag" in data:
+            s.merge_same_time_tag = bool(data["merge_same_time_tag"])
         return s
 
     @classmethod

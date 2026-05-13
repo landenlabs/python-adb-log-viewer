@@ -97,6 +97,13 @@ class SettingsDialog(QDialog):
         self._theme_combo = QComboBox()
         self._theme_combo.addItems(["Light", "Dark"])
         layout.addWidget(self._theme_combo)
+        layout.addSpacing(16)
+        self._merge_cb = QCheckBox("Merge same-time + tag messages")
+        self._merge_cb.setToolTip(
+            "Merge consecutive log entries that share the same timestamp (second) and tag\n"
+            "into a single row.  Double-click the row to expand its lines in place."
+        )
+        layout.addWidget(self._merge_cb)
         layout.addStretch()
         return grp
 
@@ -201,6 +208,7 @@ class SettingsDialog(QDialog):
 
     def _load(self) -> None:
         self._theme_combo.setCurrentText(self._settings.theme.capitalize())
+        self._merge_cb.setChecked(self._settings.merge_same_time_tag)
         # Block signals during rebuild to avoid spurious _update_command_preview calls
         for name, cb in self._buffer_cbs.items():
             cb.blockSignals(True)
@@ -217,6 +225,7 @@ class SettingsDialog(QDialog):
 
     def _on_accept(self) -> None:
         self._settings.theme = self._theme_combo.currentText().lower()
+        self._settings.merge_same_time_tag = self._merge_cb.isChecked()
         chosen = {name for name, cb in self._buffer_cbs.items() if cb.isChecked()}
         self._settings.buffers = chosen if chosen else {"main"}
         self._settings.exclude_rules = self._collect_rules()
