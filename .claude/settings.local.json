@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(pip3 install *)",
-      "Bash(python3 *)",
-      "Bash(chmod +x /Users/dennislang/opt/projects/projects-python/android/build.sh)"
-    ]
-  }
-}
