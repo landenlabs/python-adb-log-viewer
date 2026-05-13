@@ -1,0 +1,966 @@
+from __future__ import annotations
+
+from typing import List, Optional, Set
+
+from PySide6.QtCore import QModelIndex, QPoint, QTimer, Qt
+from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QFileDialog,
+    QFrame,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QSplitter,
+    QStatusBar,
+    QTableView,
+    QToolBar,
+    QVBoxLayout,
+    QWidget,
+)
+
+from .adb_reader import AdbReader, list_devices, parse_line
+from .app_settings import AppSettings
+from .colors_dialog import ColorsDialog
+from .constants import LEVEL_NAMES, LEVELS
+from .database import LogDatabase
+from .log_model import COL_MSG, COL_TAG, HighlightDelegate, LogFilterProxy, LogModel
+from .log_record import LogRecord
+from .mem_dialog import MemDialog
+from .settings_dialog import SettingsDialog
+from .stats import StatsTracker
+from .themes import apply_theme
+from .stats_dialog import StatsDialog
+from .timeline_widget import TimelineWidget
+
+# Font point sizes available via Ctrl+/Ctrl− zoom (index 3 = 9 pt = 100 %)
+_ZOOM_SIZES = (6, 7, 8, 9, 10, 11, 12, 14, 16, 18, 20, 24)
+_BASE_ZOOM_IDX = 3
+_BASE_PT = _ZOOM_SIZES[_BASE_ZOOM_IDX]   # 9
+
+
+def _fmt_bytes(n: int) -> str:
+    if n < 1024:
+        return f"{n} B"
+    if n < 1024 ** 2:
+        return f"{n / 1024:.1f} KB"
+    return f"{n / 1024 ** 2:.1f} MB"
+
+
+class MainWindow(QMainWindow):
+    def __init__(
+        self,
+        initial_tag: str = "",
+        initial_text: str = "",
+    ) -> None:
+        super().__init__()
+        self.setWindowTitle("Android Log Viewer")
+        self.resize(1440, 900)
+
+        self._db = LogDatabase()          # in-memory SQLite
+        self._db_buffer: List[LogRecord] = []   # pending DB writes, flushed at 100 rows
+        self._reader: Optional[AdbReader] = None
+        self._auto_scroll = True
+        self._next_row_id = 1
+
+        self._model = LogModel()
+        self._proxy = LogFilterProxy()
+        self._proxy.setSourceModel(self._model)
+
+        self._settings = AppSettings.load()
+        self._stats = StatsTracker()
+        self._stats_dialog: Optional[StatsDialog] = None
+        self._settings_dialog: Optional[SettingsDialog] = None
+        self._mem_dialog: Optional[MemDialog] = None
+        self._colors_dialog: Optional[ColorsDialog] = None
+        self._selected_range: Optional[tuple] = None   # (from_key, to_key) or None
+        self._range_filter_active: bool = False
+
+        self._zoom_idx: int = _BASE_ZOOM_IDX   # current index into _ZOOM_SIZES
+        self._recording: bool = True            # whether incoming rows go to the DB
+
+        # Throttle stats-dialog auto-refresh to at most once per 2 s
+        self._stats_refresh_timer = QTimer(self)
+        self._stats_refresh_timer.setSingleShot(True)
+        self._stats_refresh_timer.setInterval(2000)
+        self._stats_refresh_timer.timeout.connect(self._refresh_stats_dialog_if_visible)
+
+        self._build_ui()
+        self._wire_signals()
+        self._refresh_devices()
+
+        # Apply loaded settings immediately so the proxy and button labels
+        # reflect saved state without requiring the user to open the dialog.
+        self._proxy.set_exclude_rules(self._settings.exclude_rules)
+        self._update_settings_button_label()
+        self._apply_color_config()
+        apply_theme(self._settings.theme)
+
+        if initial_tag or initial_text:
+            self._apply_initial_filters(initial_tag, initial_text)
+
+    # ================================================================== build
+    def _build_ui(self) -> None:
+        central = QWidget()
+        self.setCentralWidget(central)
+        root = QVBoxLayout(central)
+        root.setSpacing(2)
+        root.setContentsMargins(4, 2, 4, 2)
+
+        self._build_toolbar()
+        root.addWidget(self._build_filter_bar())
+
+        splitter = QSplitter(Qt.Vertical)
+
+        # -- log table
+        self._table = QTableView()
+        self._table.setModel(self._proxy)
+        self._table.setSelectionBehavior(QTableView.SelectRows)
+        self._table.setSelectionMode(QTableView.SingleSelection)
+        self._table.setAlternatingRowColors(False)
+        self._table.setShowGrid(False)
+        self._table.setWordWrap(False)
+        self._table.verticalHeader().setVisible(False)
+        hh = self._table.horizontalHeader()
+        hh.setStretchLastSection(True)
+        hh.resizeSection(0, 170)  # timestamp
+        hh.resizeSection(1, 55)   # pid
+        hh.resizeSection(2, 55)   # tid
+        hh.resizeSection(3, 38)   # level
+        hh.resizeSection(4, 170)  # tag
+        vh = self._table.verticalHeader()
+        vh.setDefaultSectionSize(18)
+        vh.setSectionResizeMode(QHeaderView.Fixed)
+        self._table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self._highlight_delegate = HighlightDelegate(self._table)
+        self._table.setItemDelegateForColumn(COL_TAG, self._highlight_delegate)
+        self._table.setItemDelegateForColumn(COL_MSG, self._highlight_delegate)
+        splitter.addWidget(self._table)
+
+        # -- timeline
+        self._timeline = TimelineWidget()
+        splitter.addWidget(self._timeline)
+        splitter.setStretchFactor(0, 6)
+        splitter.setStretchFactor(1, 1)
+
+        root.addWidget(splitter)
+
+        # -- status bar
+        sb = QStatusBar()
+        self.setStatusBar(sb)
+        self._lbl_conn = QLabel("Disconnected")
+        self._lbl_conn.setMinimumWidth(110)
+        self._lbl_total = QLabel("0 records")
+        self._lbl_total.setMinimumWidth(100)
+        self._lbl_shown = QLabel("0 shown")
+        self._lbl_shown.setMinimumWidth(90)
+        self._lbl_db_size = QLabel("DB: 0 B")
+        self._lbl_db_size.setMinimumWidth(90)
+        self._lbl_db_size.setToolTip("Approximate size of the in-memory log database")
+        # Zoom control  [ − | 100% | + ]
+        zoom_frame = QWidget()
+        zoom_frame.setObjectName("zoom_frame")
+        zl = QHBoxLayout(zoom_frame)
+        zl.setContentsMargins(1, 1, 1, 1)
+        zl.setSpacing(0)
+
+        self._btn_zoom_out = QPushButton("−")   # U+2212 proper minus
+        self._btn_zoom_out.setFixedSize(20, 20)
+        self._btn_zoom_out.setToolTip("Zoom out  (Ctrl−)")
+        zl.addWidget(self._btn_zoom_out)
+
+        self._lbl_zoom = QPushButton("100%")
+        self._lbl_zoom.setObjectName("zoom_pct")
+        self._lbl_zoom.setFixedWidth(46)
+        self._lbl_zoom.setFixedHeight(20)
+        self._lbl_zoom.setToolTip("Reset to 100%  (Ctrl+0)")
+        zl.addWidget(self._lbl_zoom)
+
+        self._btn_zoom_in = QPushButton("+")
+        self._btn_zoom_in.setFixedSize(20, 20)
+        self._btn_zoom_in.setToolTip("Zoom in  (Ctrl+)")
+        zl.addWidget(self._btn_zoom_in)
+
+        # Time range label — left side of status bar (non-permanent, left-aligned)
+        self._lbl_time_range = QLabel()
+        self._lbl_time_range.setStyleSheet(
+            "color: #1565C0; font-weight: bold; padding: 0 6px;"
+        )
+        self._lbl_time_range.setToolTip("Selected time range on the timeline")
+        sb.addWidget(self._lbl_time_range)
+
+        sb.addPermanentWidget(self._lbl_conn)
+        sb.addPermanentWidget(self._lbl_total)
+        sb.addPermanentWidget(self._lbl_shown)
+        sb.addPermanentWidget(self._lbl_db_size)
+        sb.addPermanentWidget(zoom_frame)
+
+    def _build_toolbar(self) -> None:
+        tb = QToolBar("Main", self)
+        tb.setMovable(False)
+        self.addToolBar(tb)
+
+        self._btn_settings = QPushButton("Settings")
+        self._btn_settings.setToolTip("Configure ADB buffers and exclusion rules")
+        tb.addWidget(self._btn_settings)
+        tb.addSeparator()
+
+        tb.addWidget(QLabel(" Device: "))
+        self._device_combo = QComboBox()
+        self._device_combo.setMinimumWidth(160)
+        self._device_combo.setToolTip("Select the ADB device to monitor")
+        tb.addWidget(self._device_combo)
+
+        self._btn_refresh = QPushButton("⟳")
+        self._btn_refresh.setToolTip("Refresh device list")
+        self._btn_refresh.setMaximumWidth(30)
+        tb.addWidget(self._btn_refresh)
+        tb.addSeparator()
+
+        self._btn_connect = QPushButton("Connect")
+        self._btn_connect.setCheckable(True)
+        self._btn_connect.setMinimumWidth(90)
+        self._btn_connect.setToolTip(
+            "Start streaming adb logcat from the selected device.\n"
+            "Click again to disconnect."
+        )
+        tb.addWidget(self._btn_connect)
+
+        self._btn_record = QPushButton("● REC")
+        self._btn_record.setCheckable(True)
+        self._btn_record.setChecked(True)
+        self._btn_record.setToolTip(
+            "Toggle database recording.\n"
+            "Red ● — logs are being saved to the database.\n"
+            "Gray ○ — logs are shown live but NOT written to the database."
+        )
+        self._btn_record.setStyleSheet("color: #C62828; font-weight: bold;")
+        tb.addWidget(self._btn_record)
+        tb.addSeparator()
+
+        self._btn_clear = QPushButton("Clear")
+        self._btn_clear.setToolTip(
+            "Clear the log view and in-memory database.\n"
+            "Also flushes the device ring buffer (adb logcat -c)\n"
+            "so old logs don't replay on the next connect."
+        )
+        tb.addWidget(self._btn_clear)
+        tb.addSeparator()
+
+        self._btn_save = QPushButton("Save…")
+        self._btn_save.setToolTip(
+            "Save current logs to disk.\n"
+            "  .db  — SQLite database (full fidelity, re-openable)\n"
+            "  .txt — plain text of visible (filtered) rows\n"
+            "Shortcut: Ctrl+S"
+        )
+        tb.addWidget(self._btn_save)
+
+        self._btn_open = QPushButton("Open…")
+        self._btn_open.setToolTip(
+            "Load a previously saved log file.\n"
+            "  .db  — SQLite database saved by this app\n"
+            "  .txt / .log — plain logcat text\n"
+            "Shortcut: Ctrl+O"
+        )
+        tb.addWidget(self._btn_open)
+        tb.addSeparator()
+
+        self._chk_autoscroll = QCheckBox("Auto-scroll")
+        self._chk_autoscroll.setChecked(True)
+        self._chk_autoscroll.setToolTip(
+            "Keep the log table scrolled to the latest entry.\n"
+            "Automatically disabled when you scroll up manually."
+        )
+        tb.addWidget(self._chk_autoscroll)
+
+        tb.addSeparator()
+
+        self._btn_stats = QPushButton("Stats")
+        self._btn_stats.setToolTip("Open PID / Tag statistics and filter dialog")
+        tb.addWidget(self._btn_stats)
+
+        self._btn_memory = QPushButton("Memory")
+        self._btn_memory.setToolTip("Open live per-process memory monitor")
+        tb.addWidget(self._btn_memory)
+
+        self._btn_colors = QPushButton("Colors")
+        self._btn_colors.setToolTip("Configure log level and pattern-based row colors")
+        tb.addWidget(self._btn_colors)
+
+        # keyboard shortcuts
+        QAction(self).setShortcut(QKeySequence.Save)
+
+    def _build_filter_bar(self) -> QWidget:
+        frame = QFrame()
+        frame.setFrameShape(QFrame.StyledPanel)
+        row = QHBoxLayout(frame)
+        row.setContentsMargins(6, 3, 6, 3)
+        row.setSpacing(6)
+
+        row.addWidget(QLabel("Level:"))
+        self._level_cbs: dict[str, QCheckBox] = {}
+        for lvl in LEVELS:
+            cb = QCheckBox(lvl)
+            cb.setChecked(True)
+            cb.setToolTip(LEVEL_NAMES[lvl])
+            self._level_cbs[lvl] = cb
+            row.addWidget(cb)
+
+        row.addSpacing(12)
+
+        row.addWidget(QLabel("Tag:"))
+        self._tag_edit = QLineEdit()
+        self._tag_edit.setPlaceholderText("regex…")
+        self._tag_edit.setMaximumWidth(180)
+        self._tag_edit.setClearButtonEnabled(True)
+        self._tag_edit.setToolTip(
+            "Filter by tag name (regex, case-insensitive).\n"
+            "Shortcut: Ctrl+L"
+        )
+        row.addWidget(self._tag_edit)
+
+        row.addWidget(QLabel("Text:"))
+        self._text_edit = QLineEdit()
+        self._text_edit.setPlaceholderText("regex…")
+        self._text_edit.setMaximumWidth(260)
+        self._text_edit.setClearButtonEnabled(True)
+        self._text_edit.setToolTip(
+            "Filter by message text or tag (regex, case-insensitive).\n"
+            "Shortcut: Ctrl+F"
+        )
+        row.addWidget(self._text_edit)
+
+        self._btn_clear_filters = QPushButton("✕ Filters")
+        self._btn_clear_filters.setToolTip("Reset all level, tag, and text filters")
+        row.addWidget(self._btn_clear_filters)
+
+        self._btn_show_range = QPushButton("Show Range")
+        self._btn_show_range.setToolTip(
+            "Filter the log list to the selected time range\n"
+            "and disable auto-scroll"
+        )
+        self._btn_show_range.setStyleSheet("color: #1565C0; font-weight: bold;")
+        self._btn_show_range.setVisible(False)
+        row.addWidget(self._btn_show_range)
+
+        self._btn_clear_range = QPushButton("Clear Range")
+        self._btn_clear_range.setToolTip(
+            "Remove the time range filter and restore the full log list"
+        )
+        self._btn_clear_range.setVisible(False)
+        row.addWidget(self._btn_clear_range)
+
+        row.addStretch()
+        return frame
+
+    # ================================================================== wiring
+    def _wire_signals(self) -> None:
+        self._btn_refresh.clicked.connect(self._refresh_devices)
+        self._btn_connect.toggled.connect(self._on_connect_toggled)
+        self._btn_clear.clicked.connect(self._clear_logs)
+        self._btn_save.clicked.connect(self._save_logs)
+        self._btn_open.clicked.connect(self._open_logs)
+        self._btn_clear_filters.clicked.connect(self._clear_filters)
+        self._chk_autoscroll.toggled.connect(self._on_autoscroll_toggled)
+
+        for cb in self._level_cbs.values():
+            cb.toggled.connect(self._on_filter_changed)
+
+        self._tag_edit.textChanged.connect(self._proxy.set_tag_filter)
+        self._tag_edit.textChanged.connect(self._update_status)
+        self._text_edit.textChanged.connect(self._proxy.set_text_filter)
+        self._text_edit.textChanged.connect(self._update_status)
+
+        self._proxy.rowsInserted.connect(self._on_proxy_rows_inserted)
+        self._proxy.modelReset.connect(self._update_status)
+
+        self._table.customContextMenuRequested.connect(self._show_context_menu)
+        self._table.verticalScrollBar().sliderMoved.connect(self._on_manual_scroll)
+
+        self._timeline.timestamp_selected.connect(self._jump_to_timestamp)
+        self._timeline.range_selected.connect(self._on_range_selected)
+        self._table.selectionModel().currentChanged.connect(self._on_table_row_selected)
+        self._btn_show_range.clicked.connect(self._on_show_range)
+        self._btn_clear_range.clicked.connect(self._on_clear_range)
+
+        self._btn_stats.clicked.connect(self._show_stats_dialog)
+        self._btn_memory.clicked.connect(self._show_mem_dialog)
+        self._btn_settings.clicked.connect(self._show_settings_dialog)
+        self._btn_colors.clicked.connect(self._show_colors_dialog)
+        self._btn_record.toggled.connect(self._on_record_toggled)
+        self._btn_zoom_out.clicked.connect(self._zoom_out)
+        self._btn_zoom_in.clicked.connect(self._zoom_in)
+        self._lbl_zoom.clicked.connect(self._zoom_reset)
+
+        # keyboard shortcuts
+        save_action = QAction("Save", self)
+        save_action.setShortcut(QKeySequence("Ctrl+S"))
+        save_action.triggered.connect(self._save_logs)
+        self.addAction(save_action)
+
+        open_action = QAction("Open", self)
+        open_action.setShortcut(QKeySequence("Ctrl+O"))
+        open_action.triggered.connect(self._open_logs)
+        self.addAction(open_action)
+
+        tag_focus = QAction("Focus tag filter", self)
+        tag_focus.setShortcut(QKeySequence("Ctrl+L"))
+        tag_focus.triggered.connect(self._tag_edit.setFocus)
+        self.addAction(tag_focus)
+
+        text_focus = QAction("Focus text filter", self)
+        text_focus.setShortcut(QKeySequence("Ctrl+F"))
+        text_focus.triggered.connect(self._text_edit.setFocus)
+        self.addAction(text_focus)
+
+        # Zoom shortcuts  (Ctrl++  Ctrl+=  Ctrl−  Ctrl+0)
+        for keys, slot in [
+            ("Ctrl++", self._zoom_in),
+            ("Ctrl+=", self._zoom_in),
+            ("Ctrl+-", self._zoom_out),
+            ("Ctrl+0", self._zoom_reset),
+        ]:
+            act = QAction(self)
+            act.setShortcut(QKeySequence(keys))
+            act.triggered.connect(slot)
+            self.addAction(act)
+
+    # ================================================================== initial filters / auto-connect
+    def _apply_initial_filters(self, tag: str, text: str) -> None:
+        if tag:
+            self._tag_edit.setText(tag)
+        if text:
+            self._text_edit.setText(text)
+        # Auto-connect when exactly one real device is present
+        current = self._device_combo.currentText()
+        if self._device_combo.count() == 1 and not current.startswith("("):
+            QTimer.singleShot(0, lambda: self._btn_connect.setChecked(True))
+
+    # ================================================================== device
+    def _refresh_devices(self) -> None:
+        self._device_combo.clear()
+        devices = list_devices()
+        if devices:
+            for d in devices:
+                self._device_combo.addItem(d)
+        else:
+            self._device_combo.addItem("(no device)")
+
+    # ================================================================== zoom
+    def _zoom_in(self) -> None:
+        if self._zoom_idx < len(_ZOOM_SIZES) - 1:
+            self._zoom_idx += 1
+            self._set_font_size(_ZOOM_SIZES[self._zoom_idx])
+
+    def _zoom_out(self) -> None:
+        if self._zoom_idx > 0:
+            self._zoom_idx -= 1
+            self._set_font_size(_ZOOM_SIZES[self._zoom_idx])
+
+    def _zoom_reset(self) -> None:
+        self._zoom_idx = _BASE_ZOOM_IDX
+        self._set_font_size(_ZOOM_SIZES[self._zoom_idx])
+
+    def _set_font_size(self, pt: int) -> None:
+        self._model.set_font_size(pt)
+        row_h = max(14, round(18 * pt / _BASE_PT))
+        vh = self._table.verticalHeader()
+        vh.setDefaultSectionSize(row_h)
+        for i in range(self._model.rowCount()):
+            vh.resizeSection(i, row_h)
+        pct = round(100 * pt / _BASE_PT)
+        self._lbl_zoom.setText(f"{pct}%")
+
+    # ================================================================== record
+    def _on_record_toggled(self, checked: bool) -> None:
+        self._recording = checked
+        if checked:
+            self._btn_record.setText("● REC")
+            self._btn_record.setStyleSheet("color: #C62828; font-weight: bold;")
+            self.statusBar().showMessage("Recording resumed — new logs will be saved.", 3000)
+        else:
+            self._btn_record.setText("○ REC")
+            self._btn_record.setStyleSheet("color: #757575;")
+            self.statusBar().showMessage("Recording paused — logs are shown but not saved.", 3000)
+
+    # ================================================================== capture
+    def _on_connect_toggled(self, checked: bool) -> None:
+        if checked:
+            self._start_capture()
+        else:
+            self._stop_capture()
+
+    def _start_capture(self) -> None:
+        text = self._device_combo.currentText()
+        device: Optional[str] = text if not text.startswith("(") else None
+
+        self._reader = AdbReader(
+            device=device,
+            buffers=self._settings.buffers,
+            exclude_rules=self._settings.exclude_rules,
+            parent=self,
+        )
+        self._reader.records_ready.connect(self._on_records_ready)
+        self._reader.error_occurred.connect(self._on_reader_error)
+        self._reader.started_reading.connect(lambda: self._lbl_conn.setText("● Connected"))
+        self._reader.stopped_reading.connect(self._on_reader_stopped)
+        self._reader.start()
+        self._btn_connect.setText("Disconnect")
+
+    def _stop_capture(self) -> None:
+        if self._reader:
+            self._reader.stop()
+            self._reader.wait(3000)
+            self._reader = None
+        self._flush_db_buffer()           # write any trailing rows
+        self._mark_disconnected()
+
+    def _on_reader_error(self, msg: str) -> None:
+        self._reader = None       # thread has already finished
+        self._flush_db_buffer()
+        if "Could not find 'adb'" in msg:
+            # Fatal: adb binary missing — stop and tell the user
+            self._mark_disconnected()
+            QMessageBox.critical(self, "ADB Error", msg)
+        else:
+            # Transient error (decode glitch, pipe reset, etc.) — reconnect
+            self._schedule_reconnect(msg)
+
+    def _on_reader_stopped(self) -> None:
+        if self._reader is not None:
+            # Thread finished without us calling stop() — unexpected disconnect
+            self._reader = None
+            self._flush_db_buffer()
+            if self._btn_connect.isChecked():
+                self._schedule_reconnect("Connection lost")
+
+    def _schedule_reconnect(self, reason: str) -> None:
+        self._lbl_conn.setText("⟳ Reconnecting…")
+        self.statusBar().showMessage(
+            f"Reconnecting in 2 s  ({reason})", 4000
+        )
+        QTimer.singleShot(2000, self._try_reconnect)
+
+    def _try_reconnect(self) -> None:
+        if self._btn_connect.isChecked() and self._reader is None:
+            self._start_capture()
+
+    def _mark_disconnected(self) -> None:
+        """Update UI to Disconnected state without touching the reader."""
+        self._lbl_conn.setText("Disconnected")
+        self._btn_connect.blockSignals(True)
+        self._btn_connect.setChecked(False)
+        self._btn_connect.setText("Connect")
+        self._btn_connect.blockSignals(False)
+
+    # ================================================================== records
+    def _flush_db_buffer(self) -> None:
+        if self._db_buffer:
+            self._db.insert_batch(self._db_buffer)
+            self._db_buffer.clear()
+
+    def _on_records_ready(self, records: List[LogRecord]) -> None:
+        # Assign sequential IDs
+        for rec in records:
+            rec.row_id = self._next_row_id
+            self._next_row_id += 1
+
+        # --- UI path: update immediately on every emission ---
+        self._model.append_records(records)
+        self._timeline.add_records(records)
+        self._stats.update(records)
+        self._update_status()
+
+        if self._stats_dialog and self._stats_dialog.isVisible():
+            if not self._stats_refresh_timer.isActive():
+                self._stats_refresh_timer.start()
+
+        # --- DB path: buffer writes only when recording is active ---
+        if self._recording:
+            self._db_buffer.extend(records)
+            if len(self._db_buffer) >= 100:
+                self._flush_db_buffer()
+
+    def _on_proxy_rows_inserted(self) -> None:
+        self._update_status()
+        if self._auto_scroll:
+            self._table.scrollToBottom()
+
+    # ================================================================== filters
+    def _on_filter_changed(self) -> None:
+        levels = {lvl for lvl, cb in self._level_cbs.items() if cb.isChecked()}
+        self._proxy.set_levels(levels)
+        self._update_status()
+
+    def _clear_filters(self) -> None:
+        for cb in self._level_cbs.values():
+            cb.setChecked(True)
+        self._tag_edit.clear()
+        self._text_edit.clear()
+
+    # ================================================================== scroll
+    def _on_autoscroll_toggled(self, checked: bool) -> None:
+        self._auto_scroll = checked
+
+    def _on_manual_scroll(self) -> None:
+        sb = self._table.verticalScrollBar()
+        if sb.value() < sb.maximum():
+            self._auto_scroll = False
+            self._chk_autoscroll.blockSignals(True)
+            self._chk_autoscroll.setChecked(False)
+            self._chk_autoscroll.blockSignals(False)
+
+    def _jump_to_timestamp(self, ts: str) -> None:
+        src_row = self._model.find_row_for_timestamp(ts)
+        src_idx = self._model.index(src_row, 0)
+        proxy_idx = self._proxy.mapFromSource(src_idx)
+        if proxy_idx.isValid():
+            self._table.scrollTo(proxy_idx, QTableView.PositionAtTop)
+            self._table.selectRow(proxy_idx.row())
+
+    def _on_table_row_selected(self, current: QModelIndex, previous: QModelIndex) -> None:
+        if not current.isValid():
+            return
+        rec: Optional[LogRecord] = self._proxy.data(
+            self._proxy.index(current.row(), 0), Qt.UserRole
+        )
+        if rec:
+            self._timeline.set_cursor_key(rec.timestamp[:17])
+
+    # ================================================================== time range
+    def _on_range_selected(self, from_key: str, to_key: str) -> None:
+        """Called continuously while dragging and once on release."""
+        self._selected_range = (from_key, to_key)
+        from_time = from_key[6:]   # "HH:MM:SS"
+        to_time = to_key[6:]
+        self._lbl_time_range.setText(f"⏱  {from_time} – {to_time}")
+        self._btn_show_range.setVisible(True)
+        self._btn_clear_range.setVisible(True)
+
+    def _on_show_range(self) -> None:
+        if not self._selected_range:
+            return
+        from_key, to_key = self._selected_range
+        self._proxy.set_time_range(from_key, to_key)
+        self._range_filter_active = True
+        self._auto_scroll = False
+        self._chk_autoscroll.blockSignals(True)
+        self._chk_autoscroll.setChecked(False)
+        self._chk_autoscroll.blockSignals(False)
+        self._update_status()
+        self._btn_show_range.setStyleSheet(
+            "color: #FFFFFF; background-color: #1565C0; font-weight: bold;"
+        )
+
+    def _on_clear_range(self) -> None:
+        # Capture the source index of the top-visible row before changing the filter
+        top_proxy_idx = self._table.indexAt(QPoint(0, 0))
+        src_idx = (
+            self._proxy.mapToSource(top_proxy_idx)
+            if top_proxy_idx.isValid()
+            else QModelIndex()
+        )
+
+        self._proxy.set_time_range(None, None)
+        self._range_filter_active = False
+        self._selected_range = None
+        self._timeline.clear_range()
+        self._lbl_time_range.setText("")
+        self._btn_show_range.setVisible(False)
+        self._btn_clear_range.setVisible(False)
+        self._btn_show_range.setStyleSheet("color: #1565C0; font-weight: bold;")
+        self._update_status()
+
+        # Try to keep the same row visible at the top
+        if src_idx.isValid():
+            new_proxy_idx = self._proxy.mapFromSource(src_idx)
+            if new_proxy_idx.isValid():
+                self._table.scrollTo(new_proxy_idx, QTableView.PositionAtTop)
+
+    # ================================================================== context menu
+    def _show_context_menu(self, pos) -> None:
+        idx = self._table.indexAt(pos)
+        if not idx.isValid():
+            return
+        rec: Optional[LogRecord] = self._proxy.data(
+            self._proxy.index(idx.row(), 0), Qt.UserRole
+        )
+        if rec is None:
+            return
+
+        menu = QMenu(self)
+        menu.addAction("Copy row", lambda: QApplication.clipboard().setText(
+            f"{rec.timestamp}  {rec.pid:>6}  {rec.tid:>6}  {rec.level}  {rec.tag}: {rec.message}"
+        ))
+        menu.addAction("Copy message", lambda: QApplication.clipboard().setText(rec.message))
+        menu.addSeparator()
+        menu.addAction(
+            f"Filter by tag: {rec.tag}",
+            lambda t=rec.tag: self._tag_edit.setText(re_escape_tag(t)),
+        )
+        menu.addAction(
+            "Exclude this tag",
+            lambda t=rec.tag: self._tag_edit.setText(f"(?!{re_escape_tag(t)})"),
+        )
+        menu.exec(self._table.viewport().mapToGlobal(pos))
+
+    # ================================================================== status
+    def _update_status(self) -> None:
+        total = self._model.rowCount()
+        shown = self._proxy.rowCount()
+        self._lbl_total.setText(f"{total:,} records")
+        self._lbl_shown.setText(f"{shown:,} shown")
+        self._lbl_db_size.setText(f"DB: {_fmt_bytes(self._db.size_bytes())}")
+
+    # ================================================================== clear
+    def _clear_logs(self) -> None:
+        # 1. Wipe in-app state
+        self._db_buffer.clear()
+        self._model.clear()
+        self._db.clear()
+        self._next_row_id = 1
+        self._timeline.reset([])
+        self._stats.reset()
+        self._proxy.set_pid_filter(set())
+        self._proxy.set_tag_set_filter(set())
+        self._proxy.set_time_range(None, None)
+        self._selected_range = None
+        self._range_filter_active = False
+        self._lbl_time_range.setText("")
+        self._btn_show_range.setVisible(False)
+        self._btn_clear_range.setVisible(False)
+        self._btn_show_range.setStyleSheet("color: #1565C0; font-weight: bold;")
+        if self._stats_dialog:
+            self._stats_dialog._active_pids = set()
+            self._stats_dialog._active_tags = set()
+            self._stats_dialog.refresh(self._stats)
+            self._stats_dialog._update_status_label()
+        self._update_stats_button_label()
+        self._update_status()
+
+        # 2. Also clear the device-side ring buffer so old logs don't replay
+        #    on the next connect.  Fire-and-forget; errors are silent.
+        self._clear_device_logbuf()
+
+    def _clear_device_logbuf(self) -> None:
+        """Run 'adb logcat -c' in the background to flush the device ring buffer."""
+        import subprocess as _sp
+        device_text = self._device_combo.currentText()
+        cmd = ["adb"]
+        if not device_text.startswith("("):
+            cmd += ["-s", device_text]
+        cmd += ["logcat", "-c"]
+        try:
+            _sp.Popen(cmd, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+        except Exception:
+            pass   # adb not on PATH or no device — silently ignore
+
+    # ================================================================== save/open
+    def _save_logs(self) -> None:
+        path, filt = QFileDialog.getSaveFileName(
+            self,
+            "Save Logs",
+            "",
+            "SQLite database (*.db);;Text file (*.txt *.log)",
+        )
+        if not path:
+            return
+        if path.endswith(".db"):
+            self._db.save_to_file(path)
+        else:
+            self._save_as_text(path)
+
+    def _save_as_text(self, path: str) -> None:
+        with open(path, "w", encoding="utf-8") as fh:
+            for row in range(self._proxy.rowCount()):
+                rec: Optional[LogRecord] = self._proxy.data(
+                    self._proxy.index(row, 0), Qt.UserRole
+                )
+                if rec:
+                    fh.write(
+                        f"{rec.timestamp}  {rec.pid:>6}  {rec.tid:>6}  "
+                        f"{rec.level}  {rec.tag}: {rec.message}\n"
+                    )
+
+    def _open_logs(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open Logs",
+            "",
+            "All supported (*.db *.txt *.log);;SQLite (*.db);;Text (*.txt *.log);;All (*)",
+        )
+        if not path:
+            return
+        try:
+            if path.endswith(".db"):
+                records = self._db.load_from_file(path)
+            else:
+                records = _load_text_file(path)
+
+            self._db_buffer.clear()           # drop unflushed rows before replacing DB
+            self._model.clear()
+            self._db.clear()
+            self._next_row_id = 1
+            self._stats.reset()
+            self._proxy.set_pid_filter(set())
+            self._proxy.set_tag_set_filter(set())
+            self._proxy.set_time_range(None, None)
+            self._selected_range = None
+            self._range_filter_active = False
+            self._lbl_time_range.setText("")
+            self._btn_show_range.setVisible(False)
+            self._btn_clear_range.setVisible(False)
+            self._btn_show_range.setStyleSheet("color: #1565C0; font-weight: bold;")
+            for rec in records:
+                rec.row_id = self._next_row_id
+                self._next_row_id += 1
+            self._db.insert_batch(records)
+            self._model.append_records(records)
+            self._timeline.reset(records)
+            self._stats.update(records)
+            if self._stats_dialog:
+                self._stats_dialog._active_pids = set()
+                self._stats_dialog._active_tags = set()
+                self._stats_dialog.refresh(self._stats)
+                self._stats_dialog._update_status_label()
+            self._update_stats_button_label()
+            self._update_status()
+        except Exception as exc:
+            QMessageBox.critical(self, "Open Error", str(exc))
+
+    # ================================================================== settings dialog
+
+    def _show_settings_dialog(self) -> None:
+        if self._settings_dialog is None:
+            self._settings_dialog = SettingsDialog(self._settings, parent=self)
+            self._settings_dialog.settings_applied.connect(self._apply_settings)
+        device_text = self._device_combo.currentText()
+        device = device_text if not device_text.startswith("(") else None
+        self._settings_dialog.set_device(device)
+        self._settings_dialog._load()   # sync from current settings each time shown
+        self._settings_dialog.show()
+        self._settings_dialog.raise_()
+        self._settings_dialog.activateWindow()
+
+    def _apply_settings(self) -> None:
+        apply_theme(self._settings.theme)
+        self._proxy.set_exclude_rules(self._settings.exclude_rules)
+        self._settings.save()
+        self._update_settings_button_label()
+        self._update_status()
+        if self._reader:
+            self.statusBar().showMessage(
+                "Buffer changes will take effect on the next Connect.", 5000
+            )
+
+    def _update_settings_button_label(self) -> None:
+        active = sum(1 for r in self._settings.exclude_rules if r.enabled and r.pattern)
+        if active:
+            self._btn_settings.setText(f"Settings  [{active} rule{'s' if active != 1 else ''}]")
+            self._btn_settings.setStyleSheet("color: #E65100;")
+        else:
+            self._btn_settings.setText("Settings")
+            self._btn_settings.setStyleSheet("")
+
+    # ================================================================== stats dialog
+    def _show_stats_dialog(self) -> None:
+        if self._stats_dialog is None:
+            self._stats_dialog = StatsDialog(parent=self)
+            self._stats_dialog.filter_applied.connect(self._on_stats_filter_applied)
+
+        device_text = self._device_combo.currentText()
+        self._stats_dialog.set_device(
+            device_text if not device_text.startswith("(") else None
+        )
+        self._stats_dialog.refresh(self._stats)
+        self._stats_dialog.show()
+        self._stats_dialog.raise_()
+        self._stats_dialog.activateWindow()
+
+    def _refresh_stats_dialog_if_visible(self) -> None:
+        if self._stats_dialog and self._stats_dialog.isVisible():
+            self._stats_dialog.refresh(self._stats)
+
+    def _on_stats_filter_applied(self, pids: Set[str], tags: Set[str]) -> None:
+        self._proxy.set_pid_filter(pids)
+        self._proxy.set_tag_set_filter(tags)
+        self._update_stats_button_label()
+        self._update_status()
+
+    def _update_stats_button_label(self) -> None:
+        if self._stats_dialog:
+            pids = self._stats_dialog.active_pids
+            tags = self._stats_dialog.active_tags
+            if pids or tags:
+                parts = []
+                if pids:
+                    parts.append(f"{len(pids)}P")
+                if tags:
+                    parts.append(f"{len(tags)}T")
+                self._btn_stats.setText(f"Stats [{'+'.join(parts)}]")
+                self._btn_stats.setStyleSheet("font-weight: bold; color: #E65100;")
+                return
+        self._btn_stats.setText("Stats")
+        self._btn_stats.setStyleSheet("")
+
+    # ================================================================== colors dialog
+    def _show_colors_dialog(self) -> None:
+        if self._colors_dialog is None:
+            self._colors_dialog = ColorsDialog(self._settings, parent=self)
+            self._colors_dialog.colors_applied.connect(self._apply_color_config)
+        self._colors_dialog._load()
+        self._colors_dialog.show()
+        self._colors_dialog.raise_()
+        self._colors_dialog.activateWindow()
+
+    def _apply_color_config(self) -> None:
+        self._model.set_color_config(
+            self._settings.level_fg,
+            self._settings.level_bg,
+            self._settings.color_rules,
+        )
+
+    # ================================================================== memory dialog
+    def _show_mem_dialog(self) -> None:
+        if self._mem_dialog is None:
+            self._mem_dialog = MemDialog(parent=self)
+        device_text = self._device_combo.currentText()
+        self._mem_dialog.set_device(
+            device_text if not device_text.startswith("(") else None
+        )
+        self._mem_dialog.show()
+        self._mem_dialog.raise_()
+        self._mem_dialog.activateWindow()
+
+    # ================================================================== lifecycle
+    def closeEvent(self, event) -> None:
+        self._stop_capture()
+        self._flush_db_buffer()           # persist any trailing rows before shutdown
+        self._db.close()
+        super().closeEvent(event)
+
+
+# ============================================================ helpers
+import re as _re
+
+
+def re_escape_tag(tag: str) -> str:
+    return _re.escape(tag)
+
+
+def _load_text_file(path: str) -> List[LogRecord]:
+    records: List[LogRecord] = []
+    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            rec = parse_line(line.rstrip())
+            if rec:
+                records.append(rec)
+    return records

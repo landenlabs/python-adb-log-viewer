@@ -1,0 +1,7 @@
+
+
+ pip install PySide6
+  python3 main.py
+  # or: python3 -m android_log_viewer
+
+  
