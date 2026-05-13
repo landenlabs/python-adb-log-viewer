@@ -4,8 +4,8 @@
 
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(6, 5, 15, 0),
-    prodvers=(6, 5, 15, 0),
+    filevers=(6, 5, 16, 0),
+    prodvers=(6, 5, 16, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -20,12 +20,12 @@ VSVersionInfo(
         [
           StringStruct('CompanyName',      'LanDen Labs'),
           StringStruct('FileDescription',  'Android Log Viewer'),
-          StringStruct('FileVersion',      '6.05.15.0'),
+          StringStruct('FileVersion',      '6.05.16.0'),
           StringStruct('InternalName',     'android-log-viewer'),
           StringStruct('LegalCopyright',   '\xa9 2026 LanDen Labs'),
           StringStruct('OriginalFilename', 'android-log-viewer.exe'),
           StringStruct('ProductName',      'Android Log Viewer'),
-          StringStruct('ProductVersion',   '6.05.15.0'),
+          StringStruct('ProductVersion',   '6.05.16.0'),
           StringStruct('Comments',         'Real-time ADB logcat viewer'),
         ],
       )
