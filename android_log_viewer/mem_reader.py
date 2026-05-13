@@ -1,19 +1,20 @@
 from __future__ import annotations
 
-import re
 import subprocess
 from typing import Any, Dict, List, Optional
 
 from PySide6.QtCore import QThread, Signal
 
 
-# Single shell command: walk /proc, emit a "START_PID" delimiter before each
-# process's status snippet.  VmRSS is missing for kernel threads (rss = 0).
+# Single awk invocation over all /proc/*/status files — much faster than a
+# shell loop that spawns cat+grep per process.  Output: "pid name rss_kb\n".
+# VmRSS is absent for kernel threads; r defaults to 0 so they still appear.
 _SHELL_CMD = (
-    "for p in /proc/[0-9]*; do "
-    '[ -d "$p" ] && echo "START_PID" && '
-    'cat "$p/status" 2>/dev/null | grep -E "^(Name|Pid|VmRSS):"; '
-    "done"
+    "awk '"
+    "FNR==1{if(p)printf \"%s %s %d\\n\",p,n,r;n=\"?\";p=\"\";r=0}"
+    "/^Name:/{n=$2}/^Pid:/{p=$2}/^VmRSS:/{r=$2}"
+    "END{if(p)printf \"%s %s %d\\n\",p,n,r}'"
+    " /proc/[0-9]*/status 2>/dev/null"
 )
 
 
@@ -47,16 +48,15 @@ class MemReader(QThread):
 
 def _parse(output: str) -> List[Dict[str, Any]]:
     procs: List[Dict[str, Any]] = []
-    for chunk in output.split("START_PID"):
-        if not chunk.strip():
-            continue
-        name = re.search(r"Name:\s+(.*)", chunk)
-        pid  = re.search(r"Pid:\s+(\d+)", chunk)
-        rss  = re.search(r"VmRSS:\s+(\d+)", chunk)
-        if name and pid:
-            procs.append({
-                "name": name.group(1).strip(),
-                "pid":  pid.group(1),
-                "rss":  int(rss.group(1)) if rss else 0,
-            })
+    for line in output.splitlines():
+        parts = line.split()
+        if len(parts) >= 3:
+            try:
+                procs.append({
+                    "pid":  parts[0],
+                    "name": parts[1],
+                    "rss":  int(parts[2]),
+                })
+            except ValueError:
+                pass
     return sorted(procs, key=lambda x: x["rss"], reverse=True)

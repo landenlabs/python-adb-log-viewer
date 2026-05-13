@@ -73,6 +73,9 @@ QStatusBar {{
     background-color: {L_BG_ALT};
     border-top: 1px solid {L_BORDER};
 }}
+#zoom_frame QPushButton {{
+    padding: 2px 4px;
+}}
 QSplitter::handle {{ background-color: {L_BORDER}; }}
 QPushButton#collapsible_header {{
     text-align: left;
@@ -149,6 +152,9 @@ QStatusBar {{
     background-color: {D_BG_ALT};
     border-top: 1px solid {D_BORDER};
     color: #888888;
+}}
+#zoom_frame QPushButton {{
+    padding: 2px 4px;
 }}
 QSplitter::handle {{ background-color: {D_BORDER}; }}
 QPushButton#collapsible_header {{

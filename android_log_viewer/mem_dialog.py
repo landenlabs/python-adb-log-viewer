@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -14,6 +15,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QComboBox,
+    QProgressBar,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -34,7 +36,7 @@ _DELTA_GROW    = QColor("#C62828")  # red    — grew since grab
 _DELTA_SHRINK  = QColor("#2E7D32")  # green  — shrank since grab
 _DELTA_NEUTRAL = QColor("#9E9E9E")  # gray   — unchanged
 
-_MONO = QFont("Courier New", 9)
+_MONO = QFont("Courier New", 10)
 
 _INTERVALS = [("2 s", 2_000), ("5 s", 5_000), ("10 s", 10_000), ("30 s", 30_000)]
 _DEFAULT_IDX = 1   # 5 s
@@ -53,7 +55,7 @@ class _NumItem(QTableWidgetItem):
     def __lt__(self, other: QTableWidgetItem) -> bool:
         if isinstance(other, _NumItem):
             return self._sort_key < other._sort_key
-        return super().__lt__(other)
+        return self.text() < other.text()
 
 
 def _ro(text: str) -> QTableWidgetItem:
@@ -97,16 +99,26 @@ class MemDialog(QDialog):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Memory Monitor")
-        self.resize(820, 580)
+        self.resize(740, 580)
         self.setModal(False)
 
         self._device: Optional[str] = None
         self._reader: Optional[MemReader] = None
         self._grab_data: Dict[str, int] = {}   # pid -> grabbed rss (KB)
+        self._grab_time: Optional[float] = None
         self._last_stats: List[Dict[str, Any]] = []
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._start_refresh)
+
+        self._countdown_timer = QTimer(self)
+        self._countdown_timer.setInterval(200)
+        self._countdown_timer.timeout.connect(self._on_countdown_tick)
+        self._tick_start: float = 0.0
+
+        self._grab_elapsed_timer = QTimer(self)
+        self._grab_elapsed_timer.setInterval(1000)
+        self._grab_elapsed_timer.timeout.connect(self._update_grab_elapsed)
 
         self._build_ui()
 
@@ -131,6 +143,10 @@ class MemDialog(QDialog):
         self._btn_refresh = QPushButton("Refresh Now")
         self._btn_refresh.setToolTip("Trigger an immediate memory poll")
         self._btn_refresh.clicked.connect(self._start_refresh)
+        fm = self._btn_refresh.fontMetrics()
+        self._btn_refresh.setFixedWidth(
+            max(fm.horizontalAdvance("Refresh Now"), fm.horizontalAdvance("Refreshing")) + 36
+        )
         ctrl.addWidget(self._btn_refresh)
 
         ctrl.addSpacing(16)
@@ -148,6 +164,10 @@ class MemDialog(QDialog):
         self._btn_clear_grab.clicked.connect(self._on_clear_grab)
         ctrl.addWidget(self._btn_clear_grab)
 
+        self._lbl_grab_elapsed = QLabel("")
+        self._lbl_grab_elapsed.setStyleSheet("color: #1976D2; font-weight: bold; margin-left: 8px;")
+        ctrl.addWidget(self._lbl_grab_elapsed)
+
         ctrl.addStretch()
 
         self._btn_close = QPushButton("Close")
@@ -155,6 +175,14 @@ class MemDialog(QDialog):
         ctrl.addWidget(self._btn_close)
 
         root.addLayout(ctrl)
+
+        # ---- progress bar ----
+        self._progress_bar = QProgressBar()
+        self._progress_bar.setFixedHeight(6)
+        self._progress_bar.setTextVisible(False)
+        self._progress_bar.setRange(0, 100)
+        self._progress_bar.setValue(0)
+        root.addWidget(self._progress_bar)
 
         # ---- filter row ----
         frow = QHBoxLayout()
@@ -180,7 +208,7 @@ class MemDialog(QDialog):
         self._table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._table.setAlternatingRowColors(True)
         self._table.verticalHeader().setVisible(False)
-        self._table.verticalHeader().setDefaultSectionSize(20)
+        self._table.verticalHeader().setDefaultSectionSize(24)
         self._table.setShowGrid(False)
         self._table.setSortingEnabled(True)
         self._table.horizontalHeader().setSortIndicatorShown(True)
@@ -213,14 +241,19 @@ class MemDialog(QDialog):
         super().showEvent(event)
         self._start_refresh()
         self._timer.start(self._interval_ms())
+        if self._grab_time is not None:
+            self._grab_elapsed_timer.start()
 
     def hideEvent(self, event) -> None:
         super().hideEvent(event)
         self._timer.stop()
+        self._grab_elapsed_timer.stop()
 
     def shutdown(self) -> None:
         """Terminate background thread. Must be called before the widget is destroyed."""
         self._timer.stop()
+        self._countdown_timer.stop()
+        self._grab_elapsed_timer.stop()
         reader = self._reader
         if reader and reader.isRunning():
             reader.terminate()
@@ -239,12 +272,21 @@ class MemDialog(QDialog):
     def _on_interval_changed(self) -> None:
         if self._timer.isActive():
             self._timer.setInterval(self._interval_ms())
+        if self._countdown_timer.isActive():
+            self._tick_start = time.monotonic()
+
+    def _on_countdown_tick(self) -> None:
+        elapsed_ms = (time.monotonic() - self._tick_start) * 1000
+        pct = min(100, int(elapsed_ms / self._interval_ms() * 100))
+        self._progress_bar.setValue(pct)
 
     def _start_refresh(self) -> None:
         if self._reader and self._reader.isRunning():
             return
+        self._countdown_timer.stop()
+        self._progress_bar.setRange(0, 0)   # indeterminate busy animation
         self._btn_refresh.setEnabled(False)
-        self._btn_refresh.setText("…")
+        self._btn_refresh.setText("Refreshing")
         self._reader = MemReader(device=self._device, parent=self)
         self._reader.stats_ready.connect(self._on_stats)
         self._reader.error_occurred.connect(self._on_error)
@@ -254,6 +296,10 @@ class MemDialog(QDialog):
     def _on_reader_done(self) -> None:
         self._btn_refresh.setEnabled(True)
         self._btn_refresh.setText("Refresh Now")
+        self._progress_bar.setRange(0, 100)
+        self._progress_bar.setValue(0)
+        self._tick_start = time.monotonic()
+        self._countdown_timer.start()
 
     def _on_stats(self, stats: List[Dict[str, Any]]) -> None:
         self._last_stats = stats
@@ -341,6 +387,10 @@ class MemDialog(QDialog):
                 self._table.setItem(row, COL_DELTA, _delta_item(0))
         self._table.setSortingEnabled(True)
 
+        self._grab_time = time.monotonic()
+        self._update_grab_elapsed()
+        self._grab_elapsed_timer.start()
+
     def _on_clear_grab(self) -> None:
         """Remove all Grab baselines and clear the Grab / Delta columns."""
         self._grab_data.clear()
@@ -349,3 +399,25 @@ class MemDialog(QDialog):
             self._table.setItem(row, COL_GRAB,  _ro(""))
             self._table.setItem(row, COL_DELTA, _ro(""))
         self._table.setSortingEnabled(True)
+
+        self._grab_time = None
+        self._lbl_grab_elapsed.setText("")
+        self._grab_elapsed_timer.stop()
+
+    def _update_grab_elapsed(self) -> None:
+        if self._grab_time is None:
+            self._lbl_grab_elapsed.setText("")
+            return
+
+        elapsed = int(time.monotonic() - self._grab_time)
+        m, s = divmod(elapsed, 60)
+        h, m = divmod(m, 60)
+
+        if h > 0:
+            text = f"Grabbed {h}h {m}m {s}s ago"
+        elif m > 0:
+            text = f"Grabbed {m}m {s}s ago"
+        else:
+            text = f"Grabbed {s}s ago"
+
+        self._lbl_grab_elapsed.setText(text)

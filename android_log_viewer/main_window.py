@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import List, Optional, Set
 
-from PySide6.QtCore import QModelIndex, QPoint, QSize, QTimer, Qt
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtCore import QEvent, QModelIndex, QPoint, QSize, QTimer, Qt
+from PySide6.QtGui import QAction, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -95,6 +95,9 @@ class MainWindow(QMainWindow):
         self._stats_refresh_timer.setInterval(2000)
         self._stats_refresh_timer.timeout.connect(self._refresh_stats_dialog_if_visible)
 
+        self._bg_pixmaps: dict[str, Optional[QPixmap]] = {}
+        self._load_bg_pixmaps()
+
         self._build_ui()
         self._wire_signals()
         self._refresh_devices()
@@ -109,6 +112,35 @@ class MainWindow(QMainWindow):
 
         if initial_tag or initial_text:
             self._apply_initial_filters(initial_tag, initial_text)
+
+        self._update_empty_overlay()
+
+    # ================================================================== background image
+    def _load_bg_pixmaps(self) -> None:
+        from .resources import resource_path
+        for name in ("bg-dark.jpg", "bg-light.jpg"):
+            path = resource_path(name)
+            self._bg_pixmaps[name] = QPixmap(str(path)) if path.exists() else None
+
+    def _update_empty_overlay(self) -> None:
+        if self._proxy.rowCount() > 0:
+            self._empty_overlay.hide()
+            return
+        img_name = "bg-dark.jpg" if self._settings.theme == "dark" else "bg-light.jpg"
+        px = self._bg_pixmaps.get(img_name)
+        if px and not px.isNull():
+            scaled = px.scaled(self._table.size(), Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+            self._empty_overlay.setPixmap(scaled)
+        self._empty_overlay.setGeometry(self._table.rect())
+        self._empty_overlay.show()
+        self._empty_overlay.raise_()
+
+    def eventFilter(self, obj: object, event: QEvent) -> bool:
+        if obj is self._table and event.type() == QEvent.Type.Resize:
+            if self._empty_overlay.isVisible():
+                self._empty_overlay.setGeometry(self._table.rect())
+                self._update_empty_overlay()
+        return super().eventFilter(obj, event)
 
     # ================================================================== build
     def _build_ui(self) -> None:
@@ -158,6 +190,13 @@ class MainWindow(QMainWindow):
         self._highlight_delegate = HighlightDelegate(self._table)
         self._table.setItemDelegateForColumn(COL_TAG, self._highlight_delegate)
         self._table.setItemDelegateForColumn(COL_MSG, self._highlight_delegate)
+
+        self._empty_overlay = QLabel(self._table)
+        self._empty_overlay.setAlignment(Qt.AlignCenter)
+        self._empty_overlay.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self._empty_overlay.hide()
+        self._table.installEventFilter(self)
+
         splitter.addWidget(self._table)
 
         # -- timeline
@@ -170,6 +209,7 @@ class MainWindow(QMainWindow):
 
         # -- status bar
         sb = QStatusBar()
+        sb.setSizeGripEnabled(False)
         self.setStatusBar(sb)
         self._lbl_conn = QLabel("Disconnected")
         self._lbl_conn.setMinimumWidth(110)
@@ -184,23 +224,23 @@ class MainWindow(QMainWindow):
         zoom_frame = QWidget()
         zoom_frame.setObjectName("zoom_frame")
         zl = QHBoxLayout(zoom_frame)
-        zl.setContentsMargins(1, 1, 1, 1)
-        zl.setSpacing(0)
+        zl.setContentsMargins(2, 2, 8, 2)
+        zl.setSpacing(2)
 
         self._btn_zoom_out = QPushButton("−")   # U+2212 proper minus
-        self._btn_zoom_out.setFixedSize(20, 20)
+        self._btn_zoom_out.setFixedSize(24, 24)
         self._btn_zoom_out.setToolTip("Zoom out  (Ctrl−)")
         zl.addWidget(self._btn_zoom_out)
 
         self._lbl_zoom = QPushButton("100%")
         self._lbl_zoom.setObjectName("zoom_pct")
-        self._lbl_zoom.setFixedWidth(46)
-        self._lbl_zoom.setFixedHeight(20)
+        self._lbl_zoom.setFixedWidth(54)
+        self._lbl_zoom.setFixedHeight(24)
         self._lbl_zoom.setToolTip("Reset to 100%  (Ctrl+0)")
         zl.addWidget(self._lbl_zoom)
 
         self._btn_zoom_in = QPushButton("+")
-        self._btn_zoom_in.setFixedSize(20, 20)
+        self._btn_zoom_in.setFixedSize(24, 24)
         self._btn_zoom_in.setToolTip("Zoom in  (Ctrl+)")
         zl.addWidget(self._btn_zoom_in)
 
@@ -780,6 +820,7 @@ class MainWindow(QMainWindow):
         self._lbl_total.setText(f"{total:,} records")
         self._lbl_shown.setText(f"{shown:,} shown")
         self._lbl_db_size.setText(f"DB: {_fmt_bytes(self._db.size_bytes())}")
+        self._update_empty_overlay()
 
     # ================================================================== clear
     def _clear_logs(self) -> None:
@@ -918,6 +959,7 @@ class MainWindow(QMainWindow):
         self._settings.save()
         self._update_settings_button_label()
         self._update_status()
+        self._update_empty_overlay()
         if self._reader:
             self.statusBar().showMessage(
                 "Buffer changes will take effect on the next Connect.", 5000
