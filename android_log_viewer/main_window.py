@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QSplitter,
     QStatusBar,
     QTableView,
@@ -27,12 +28,14 @@ from PySide6.QtWidgets import (
 )
 
 from .adb_reader import AdbReader, list_devices, parse_line
+from .version import __version__
 from .app_settings import AppSettings
 from .colors_dialog import ColorsDialog
 from .constants import LEVEL_NAMES, LEVELS
 from .database import LogDatabase
 from .log_model import COL_MSG, COL_TAG, HighlightDelegate, LogFilterProxy, LogModel
 from .log_record import LogRecord
+from .about_dialog import AboutDialog
 from .mem_dialog import MemDialog
 from .settings_dialog import SettingsDialog
 from .stats import StatsTracker
@@ -61,7 +64,7 @@ class MainWindow(QMainWindow):
         initial_text: str = "",
     ) -> None:
         super().__init__()
-        self.setWindowTitle("Android Log Viewer")
+        self.setWindowTitle(f"Android Log Viewer - v{__version__}   LanDen Labs (2026)")
         self.resize(1440, 900)
 
         self._db = LogDatabase()          # in-memory SQLite
@@ -295,6 +298,16 @@ class MainWindow(QMainWindow):
         self._btn_colors.setToolTip("Configure log level and pattern-based row colors")
         tb.addWidget(self._btn_colors)
 
+        # Push ? button to the far right
+        _spacer = QWidget()
+        _spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        tb.addWidget(_spacer)
+
+        self._btn_about = QPushButton("?")
+        self._btn_about.setToolTip("About Android Log Viewer")
+        self._btn_about.setFixedWidth(28)
+        tb.addWidget(self._btn_about)
+
         # keyboard shortcuts
         QAction(self).setShortcut(QKeySequence.Save)
 
@@ -395,6 +408,7 @@ class MainWindow(QMainWindow):
         self._btn_memory.clicked.connect(self._show_mem_dialog)
         self._btn_settings.clicked.connect(self._show_settings_dialog)
         self._btn_colors.clicked.connect(self._show_colors_dialog)
+        self._btn_about.clicked.connect(self._show_about_dialog)
         self._btn_record.toggled.connect(self._on_record_toggled)
         self._btn_zoom_out.clicked.connect(self._zoom_out)
         self._btn_zoom_in.clicked.connect(self._zoom_in)
@@ -928,6 +942,10 @@ class MainWindow(QMainWindow):
             self._settings.color_rules,
         )
 
+    # ================================================================== about dialog
+    def _show_about_dialog(self) -> None:
+        AboutDialog(parent=self).exec()
+
     # ================================================================== memory dialog
     def _show_mem_dialog(self) -> None:
         if self._mem_dialog is None:
@@ -942,6 +960,12 @@ class MainWindow(QMainWindow):
 
     # ================================================================== lifecycle
     def closeEvent(self, event) -> None:
+        # Stop any running background threads before Qt tears down the widget tree.
+        # QThread::~QThread() aborts if the thread is still running.
+        if self._mem_dialog is not None:
+            self._mem_dialog.shutdown()
+        if self._stats_dialog is not None:
+            self._stats_dialog.shutdown()
         self._stop_capture()
         self._flush_db_buffer()           # persist any trailing rows before shutdown
         self._db.close()

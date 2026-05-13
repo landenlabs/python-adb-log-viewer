@@ -1,0 +1,35 @@
+# PyInstaller Windows version resource.
+# Appears in Explorer → Properties → Details tab.
+# Pass to PyInstaller with: --version-file windows_version_info.py
+
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(1, 2, 3, 0),
+    prodvers=(1, 2, 3, 0),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0),
+  ),
+  kids=[
+    StringFileInfo([
+      StringTable(
+        '040904B0',   # en-US / Unicode
+        [
+          StringStruct('CompanyName',      'LanDen Labs'),
+          StringStruct('FileDescription',  'Android Log Viewer'),
+          StringStruct('FileVersion',      '1.2.3.0'),
+          StringStruct('InternalName',     'android-log-viewer'),
+          StringStruct('LegalCopyright',   '\xa9 2026 LanDen Labs'),
+          StringStruct('OriginalFilename', 'android-log-viewer.exe'),
+          StringStruct('ProductName',      'Android Log Viewer'),
+          StringStruct('ProductVersion',   '1.2.3.0'),
+          StringStruct('Comments',         'Real-time ADB logcat viewer'),
+        ],
+      )
+    ]),
+    VarFileInfo([VarStruct('Translation', [0x0409, 1200])]),
+  ],
+)

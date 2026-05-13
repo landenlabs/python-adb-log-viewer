@@ -218,6 +218,14 @@ class MemDialog(QDialog):
         super().hideEvent(event)
         self._timer.stop()
 
+    def shutdown(self) -> None:
+        """Terminate background thread. Must be called before the widget is destroyed."""
+        self._timer.stop()
+        reader = self._reader
+        if reader and reader.isRunning():
+            reader.terminate()
+            reader.wait(500)
+
     # ================================================================== public API
 
     def set_device(self, device: Optional[str]) -> None:

@@ -3,9 +3,11 @@
 import argparse
 import sys
 
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
 from android_log_viewer.main_window import MainWindow
+from android_log_viewer.resources import resource_path
 
 
 def _parse_args() -> argparse.Namespace:
@@ -29,6 +31,11 @@ def main() -> None:
     args = _parse_args()
     app = QApplication(sys.argv)
     app.setApplicationName("Android Log Viewer")
+    app.setOrganizationName("LanDen Labs")
+    app.setOrganizationDomain("landenlabs.com")
+    icon_png = resource_path("log-viewer.png")
+    if icon_png.exists():
+        app.setWindowIcon(QIcon(str(icon_png)))
     win = MainWindow(initial_tag=args.tag, initial_text=args.text)
     win.show()
     sys.exit(app.exec())

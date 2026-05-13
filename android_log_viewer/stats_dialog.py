@@ -281,6 +281,15 @@ class StatsDialog(QDialog):
                 visible += 1
         self._tag_filter_lbl.setText(f"{visible}/{total}" if rx is not None else "")
 
+    # ================================================================== lifecycle
+
+    def shutdown(self) -> None:
+        """Terminate background thread. Must be called before the widget is destroyed."""
+        reader = self._ps_reader
+        if reader and reader.isRunning():
+            reader.terminate()
+            reader.wait(500)
+
     # ================================================================== button handlers
 
     def _on_refresh_stats(self) -> None:
