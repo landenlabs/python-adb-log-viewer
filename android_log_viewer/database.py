@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import os
 import sqlite3
-from typing import List
+import shutil
+import tempfile
+from typing import List, Optional
 
 from .log_record import LogRecord
 
@@ -24,7 +27,15 @@ CREATE INDEX IF NOT EXISTS idx_ts    ON logs(timestamp);
 class LogDatabase:
     """SQLite store for log records. Lives on the main thread."""
 
-    def __init__(self, path: str = ":memory:") -> None:
+    def __init__(self, path: Optional[str] = None) -> None:
+        self._temp_dir: Optional[str] = None
+        if path is None:
+            # Create a temporary file to keep RAM usage low.
+            # This directory is removed in close().
+            self._temp_dir = tempfile.mkdtemp(prefix="adb_log_viewer_")
+            path = os.path.join(self._temp_dir, "logs.db")
+
+        self._path = path
         self._conn = sqlite3.connect(path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
@@ -46,6 +57,17 @@ class LogDatabase:
 
     def count(self) -> int:
         return self._conn.execute("SELECT COUNT(*) FROM logs").fetchone()[0]
+
+    def prune_oldest(self, count: int) -> None:
+        """Remove the oldest 'count' records from the database."""
+        if count <= 0:
+            return
+        # Use a subquery to find the IDs of the oldest rows.
+        self._conn.execute(
+            "DELETE FROM logs WHERE id IN (SELECT id FROM logs ORDER BY id LIMIT ?)",
+            (count,),
+        )
+        self._conn.commit()
 
     def clear(self) -> None:
         self._conn.execute("DELETE FROM logs")
@@ -71,8 +93,11 @@ class LogDatabase:
                           r["level"], r["tag"], r["message"]) for r in rows]
 
     def size_bytes(self) -> int:
-        """Approximate in-memory SQLite database size in bytes."""
+        """Approximate size of the log database in bytes."""
         try:
+            if self._path and os.path.exists(self._path):
+                return os.path.getsize(self._path)
+            # fallback for :memory:
             pages     = self._conn.execute("PRAGMA page_count").fetchone()[0]
             page_size = self._conn.execute("PRAGMA page_size").fetchone()[0]
             return pages * page_size
@@ -81,3 +106,8 @@ class LogDatabase:
 
     def close(self) -> None:
         self._conn.close()
+        if self._temp_dir and os.path.exists(self._temp_dir):
+            try:
+                shutil.rmtree(self._temp_dir)
+            except Exception:
+                pass

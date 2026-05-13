@@ -39,6 +39,11 @@ LEVEL_SEVERITY: dict[str, int] = {
     "F": 5,
 }
 
+# Maximum number of records to keep in memory/DB.
+# When this is exceeded, the oldest PRUNE_SIZE records are removed.
+MAX_RECORDS = 100_000
+PRUNE_SIZE = 10_000
+
 TIMELINE_BAR_COLORS: dict[str, QColor] = {
     "V": QColor("#9E9E9E"),
     "D": QColor("#42A5F5"),

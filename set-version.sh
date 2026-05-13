@@ -25,6 +25,12 @@ fi
 # Strip leading 'v' for Python __version__
 PY_VERSION="${VERSION#v}"
 
+# Derive Windows-format version components
+IFS='.' read -r VER_MAJOR VER_MINOR VER_PATCH <<< "$PY_VERSION"
+VER_PATCH="${VER_PATCH:-0}"
+WIN_TUPLE="${VER_MAJOR}, ${VER_MINOR}, ${VER_PATCH}, 0"
+WIN_VERSION="${PY_VERSION}.0"
+
 echo "Setting version to ${VERSION} (Python: ${PY_VERSION})"
 
 # Update android_log_viewer/version.py
@@ -33,8 +39,17 @@ sed -i '' "s/__version__ = \".*\"/__version__ = \"${PY_VERSION}\"/" android_log_
 # Update VERSION file
 echo "${VERSION}" > VERSION
 
+# Update README.md (<!-- VERSION --> marker)
+sed -i '' "s|<!-- VERSION -->v[^ <]*|<!-- VERSION -->${VERSION}|" README.md
+
+# Update windows_version_info.py
+sed -i '' -E "s/filevers=\([^)]+\)/filevers=(${WIN_TUPLE})/" windows_version_info.py
+sed -i '' -E "s/prodvers=\([^)]+\)/prodvers=(${WIN_TUPLE})/" windows_version_info.py
+sed -i '' -E "s/(StringStruct\('FileVersion',[[:space:]]+')[^']+'/\1${WIN_VERSION}'/" windows_version_info.py
+sed -i '' -E "s/(StringStruct\('ProductVersion',[[:space:]]+')[^']+'/\1${WIN_VERSION}'/" windows_version_info.py
+
 # Stage, commit, tag, push
-git add android_log_viewer/version.py VERSION
+git add android_log_viewer/version.py VERSION README.md windows_version_info.py
 git commit -m "${MESSAGE}"
 git tag -a "${VERSION}" -m "${MESSAGE}"
 git push origin main --follow-tags

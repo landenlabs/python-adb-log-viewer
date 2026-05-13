@@ -31,7 +31,7 @@ from .adb_reader import AdbReader, list_devices, parse_line
 from .version import __version__
 from .app_settings import AppSettings
 from .colors_dialog import ColorsDialog
-from .constants import LEVEL_NAMES, LEVELS
+from .constants import LEVEL_NAMES, LEVELS, MAX_RECORDS, PRUNE_SIZE
 from .database import LogDatabase
 from .log_model import COL_MSG, COL_TAG, HighlightDelegate, LogFilterProxy, LogModel
 from .log_record import LogRecord
@@ -580,6 +580,11 @@ class MainWindow(QMainWindow):
         if self._db_buffer:
             self._db.insert_batch(self._db_buffer)
             self._db_buffer.clear()
+
+            # Maintain DB record limit
+            count = self._db.count()
+            if count > MAX_RECORDS:
+                self._db.prune_oldest(count - MAX_RECORDS + PRUNE_SIZE)
 
     def _on_records_ready(self, records: List[LogRecord]) -> None:
         # Assign sequential IDs

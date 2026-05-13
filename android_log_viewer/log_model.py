@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from .app_settings import ExcludeRule
-from .constants import LEVEL_BG, LEVEL_FG
+from .constants import LEVEL_BG, LEVEL_FG, MAX_RECORDS, PRUNE_SIZE
 from .log_record import LogRecord
 
 _COLUMNS = ("Time", "PID", "TID", "Lvl", "Tag", "Message")
@@ -79,22 +79,32 @@ class LogModel(QAbstractTableModel):
             if col == COL_MSG:     return rec.message
 
         elif role == Qt.BackgroundRole:
+            if rec._cached_bg is not None:
+                return rec._cached_bg
+            res = self._level_bg.get(rec.level, QColor("#FFFFFF"))
             for pat, field, fg, bg, entire_row in self._color_rules:
                 if not entire_row or not bg:
                     continue
                 target = rec.tag if field == "TAG" else rec.message
                 if pat.search(target):
-                    return QColor(bg)
-            return self._level_bg.get(rec.level, QColor("#FFFFFF"))
+                    res = QColor(bg)
+                    break
+            rec._cached_bg = res
+            return res
 
         elif role == Qt.ForegroundRole:
+            if rec._cached_fg is not None:
+                return rec._cached_fg
+            res = self._level_fg.get(rec.level, QColor("#000000"))
             for pat, field, fg, bg, entire_row in self._color_rules:
                 if not entire_row or not fg:
                     continue
                 target = rec.tag if field == "TAG" else rec.message
                 if pat.search(target):
-                    return QColor(fg)
-            return self._level_fg.get(rec.level, QColor("#000000"))
+                    res = QColor(fg)
+                    break
+            rec._cached_fg = res
+            return res
 
         elif role == Qt.FontRole:
             return self._font
@@ -103,12 +113,18 @@ class LogModel(QAbstractTableModel):
             return rec
 
         elif role == HIGHLIGHT_ROLE:
+            if rec._cached_highlights is None:
+                rec._cached_highlights = {}
+            if col in rec._cached_highlights:
+                return rec._cached_highlights[col]
+
             if col == COL_TAG:
                 field_name, text = "TAG", rec.tag
             elif col == COL_MSG:
                 field_name, text = "MESSAGE", rec.message
             else:
                 return None
+
             spans: list[tuple[int, int, Optional[str], Optional[str]]] = []
             for pat, field, fg, bg, entire_row in self._color_rules:
                 if entire_row or field != field_name:
@@ -117,7 +133,10 @@ class LogModel(QAbstractTableModel):
                     continue
                 for m in pat.finditer(text):
                     spans.append((m.start(), m.end(), fg, bg))
-            return spans or None
+
+            res = spans or None
+            rec._cached_highlights[col] = res
+            return res
 
         return None
 
@@ -160,17 +179,40 @@ class LogModel(QAbstractTableModel):
                 rule.entire_row,
             ))
         self._color_rules = compiled
+
+        # Clear cache so new rules are applied
+        for rec in self._records:
+            rec._cached_bg = None
+            rec._cached_fg = None
+            rec._cached_highlights = None
+
         self.layoutChanged.emit()
 
     # ------------------------------------------------------------------ write
     def append_records(self, records: List[LogRecord]) -> None:
         if not records:
             return
+
+        # Cap memory growth: if we're about to exceed MAX_RECORDS,
+        # prune the oldest records plus a buffer to avoid pruning on every batch.
+        if len(self._records) + len(records) > MAX_RECORDS:
+            to_remove = (len(self._records) + len(records) - MAX_RECORDS) + PRUNE_SIZE
+            self.prune_oldest(to_remove)
+
         first = len(self._records)
         last = first + len(records) - 1
         self.beginInsertRows(QModelIndex(), first, last)
         self._records.extend(records)
         self.endInsertRows()
+
+    def prune_oldest(self, count: int) -> None:
+        """Remove the first 'count' records from the model."""
+        if count <= 0 or not self._records:
+            return
+        actual = min(count, len(self._records))
+        self.beginRemoveRows(QModelIndex(), 0, actual - 1)
+        del self._records[:actual]
+        self.endRemoveRows()
 
     def clear(self) -> None:
         self.beginResetModel()
@@ -214,37 +256,64 @@ class HighlightDelegate(QStyledItemDelegate):
         text: str = opt.text or ""
         opt.text = ""
 
+        # 1. Draw the item background, selection, focus, etc.
         style = option.widget.style() if option.widget else QApplication.style()
         style.drawControl(QStyle.CE_ItemViewItem, opt, painter, option.widget)
 
         if not text:
             return
 
+        # 2. Draw the text segments with highlights
         text_rect = style.subElementRect(QStyle.SE_ItemViewItemText, opt, option.widget)
+        fm = option.fontMetrics
+        ascent = fm.ascent()
 
-        doc = QTextDocument()
-        doc.setDefaultFont(option.font)
-        doc.setDocumentMargin(0)
-        doc.setPlainText(text)
-
-        cursor = QTextCursor(doc)
-        for start, end, fg_hex, bg_hex in highlights:
-            if start >= end:
-                continue
-            cursor.setPosition(start)
-            cursor.setPosition(end, QTextCursor.KeepAnchor)
-            fmt = QTextCharFormat()
-            if bg_hex:
-                fmt.setBackground(QColor(bg_hex))
-            if fg_hex:
-                fmt.setForeground(QColor(fg_hex))
-            cursor.setCharFormat(fmt)
+        # Ensure highlights are sorted and within bounds
+        highlights.sort(key=lambda x: x[0])
 
         painter.save()
+        painter.setFont(option.font)
         painter.translate(text_rect.topLeft())
-        clip = QRectF(0, 0, text_rect.width(), text_rect.height())
-        painter.setClipRect(clip)
-        doc.drawContents(painter, clip)
+        # Clip to the text rectangle to prevent drawing into other columns
+        painter.setClipRect(0, 0, text_rect.width(), text_rect.height())
+
+        last_pos = 0
+        x_offset = 0
+
+        for start, end, fg_hex, bg_hex in highlights:
+            if start >= len(text):
+                break
+            end = min(end, len(text))
+            if end <= start:
+                continue
+
+            # Gap before this highlight
+            if start > last_pos:
+                seg = text[last_pos:start]
+                painter.setPen(option.palette.text().color())
+                painter.drawText(x_offset, ascent, seg)
+                x_offset += fm.horizontalAdvance(seg)
+
+            # The highlighted segment
+            seg = text[start:end]
+            adv = fm.horizontalAdvance(seg)
+            if bg_hex:
+                painter.fillRect(x_offset, 0, adv, text_rect.height(), QColor(bg_hex))
+            if fg_hex:
+                painter.setPen(QColor(fg_hex))
+            else:
+                painter.setPen(option.palette.text().color())
+
+            painter.drawText(x_offset, ascent, seg)
+            x_offset += adv
+            last_pos = end
+
+        # Trailing text
+        if last_pos < len(text):
+            seg = text[last_pos:]
+            painter.setPen(option.palette.text().color())
+            painter.drawText(x_offset, ascent, seg)
+
         painter.restore()
 
 

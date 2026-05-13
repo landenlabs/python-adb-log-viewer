@@ -32,6 +32,16 @@ if not "!VTAG:~0,1!"=="v" set "VTAG=v!VTAG!"
 :: Strip leading 'v' for Python __version__
 set "PY_VERSION=!VTAG:~1!"
 
+:: Parse version components for Windows format
+for /f "tokens=1,2,3 delims=." %%a in ("!PY_VERSION!") do (
+    set "VER_MAJOR=%%a"
+    set "VER_MINOR=%%b"
+    set "VER_PATCH=%%c"
+)
+if "!VER_PATCH!"=="" set "VER_PATCH=0"
+set "WIN_TUPLE=!VER_MAJOR!, !VER_MINOR!, !VER_PATCH!, 0"
+set "WIN_VERSION=!PY_VERSION!.0"
+
 echo Setting version to !VTAG! (Python: !PY_VERSION!)
 
 :: Update android_log_viewer/version.py
@@ -43,8 +53,33 @@ if %errorlevel% neq 0 ( echo ERROR: failed to update version.py & exit /b 1 )
 echo !VTAG!>VERSION
 if %errorlevel% neq 0 ( echo ERROR: failed to update VERSION & exit /b 1 )
 
+:: Update README.md
+powershell -NoProfile -Command ^
+  "(Get-Content 'README.md') -replace '<!-- VERSION -->v[^ <]+', '<!-- VERSION -->!VTAG!' | Set-Content 'README.md'"
+if %errorlevel% neq 0 ( echo ERROR: failed to update README.md & exit /b 1 )
+
+:: Update windows_version_info.py - filevers tuple
+powershell -NoProfile -Command ^
+  "(Get-Content 'windows_version_info.py') -replace 'filevers=\([^)]+\)', 'filevers=(!WIN_TUPLE!)' | Set-Content 'windows_version_info.py'"
+if %errorlevel% neq 0 ( echo ERROR: failed to update filevers & exit /b 1 )
+
+:: Update windows_version_info.py - prodvers tuple
+powershell -NoProfile -Command ^
+  "(Get-Content 'windows_version_info.py') -replace 'prodvers=\([^)]+\)', 'prodvers=(!WIN_TUPLE!)' | Set-Content 'windows_version_info.py'"
+if %errorlevel% neq 0 ( echo ERROR: failed to update prodvers & exit /b 1 )
+
+:: Update windows_version_info.py - FileVersion string
+powershell -NoProfile -Command ^
+  "(Get-Content 'windows_version_info.py') -replace '''FileVersion'',\s+''[^'']+''', '''FileVersion'',      ''!WIN_VERSION!''' | Set-Content 'windows_version_info.py'"
+if %errorlevel% neq 0 ( echo ERROR: failed to update FileVersion & exit /b 1 )
+
+:: Update windows_version_info.py - ProductVersion string
+powershell -NoProfile -Command ^
+  "(Get-Content 'windows_version_info.py') -replace '''ProductVersion'',\s+''[^'']+''', '''ProductVersion'',   ''!WIN_VERSION!''' | Set-Content 'windows_version_info.py'"
+if %errorlevel% neq 0 ( echo ERROR: failed to update ProductVersion & exit /b 1 )
+
 :: Stage files
-git add android_log_viewer/version.py VERSION
+git add android_log_viewer/version.py VERSION README.md windows_version_info.py
 if %errorlevel% neq 0 ( echo ERROR: git add failed & exit /b 1 )
 
 :: Commit
