@@ -6,6 +6,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QAbstractScrollArea,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -17,6 +18,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -24,6 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from .app_settings import BUFFER_INFO, EXCLUDE_FIELDS, AppSettings, ExcludeRule
+from .colors_dialog import CollapsibleBox
 
 
 class SettingsDialog(QDialog):
@@ -56,9 +59,29 @@ class SettingsDialog(QDialog):
         root = QVBoxLayout(self)
         root.setSpacing(10)
 
-        root.addWidget(self._build_appearance_group())
-        root.addWidget(self._build_buffers_group())
-        root.addWidget(self._build_rules_group(), stretch=1)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll_content = QWidget()
+        scroll_layout = QVBoxLayout(scroll_content)
+        scroll_layout.setContentsMargins(0, 0, 0, 0)
+        scroll_layout.setSpacing(10)
+
+        scroll_layout.addWidget(self._build_appearance_group())
+
+        self._buffers_box = CollapsibleBox("ADB Log Buffers")
+        self._buffers_box.add_widget(self._build_buffers_content())
+        scroll_layout.addWidget(self._buffers_box)
+
+        self._rules_box = CollapsibleBox(
+            "Exclusion Rules  –  matching rows are hidden from the log view"
+        )
+        self._rules_box.add_widget(self._build_rules_content())
+        scroll_layout.addWidget(self._rules_box)
+
+        scroll_layout.addStretch()
+        scroll.setWidget(scroll_content)
+        root.addWidget(scroll)
 
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         btns.accepted.connect(self._on_accept)
@@ -79,9 +102,10 @@ class SettingsDialog(QDialog):
 
     # ------------------------------------------------------------------ buffers
 
-    def _build_buffers_group(self) -> QWidget:
-        grp = QGroupBox("ADB Log Buffers")
-        layout = QGridLayout(grp)
+    def _build_buffers_content(self) -> QWidget:
+        container = QWidget()
+        layout = QGridLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setColumnStretch(1, 1)
         layout.setHorizontalSpacing(10)
 
@@ -101,13 +125,14 @@ class SettingsDialog(QDialog):
         note.setStyleSheet("font-style: italic; padding-top: 4px;")
         layout.addWidget(note, len(BUFFER_INFO), 0, 1, 2)
 
-        return grp
+        return container
 
     # ------------------------------------------------------------------ rules
 
-    def _build_rules_group(self) -> QWidget:
-        grp = QGroupBox("Exclusion Rules  –  matching rows are hidden from the log view")
-        layout = QVBoxLayout(grp)
+    def _build_rules_content(self) -> QWidget:
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
 
         self._rules_table = QTableWidget()
         self._rules_table.setColumnCount(3)
@@ -122,6 +147,7 @@ class SettingsDialog(QDialog):
         self._rules_table.setShowGrid(True)
         self._rules_table.setSortingEnabled(False)
         self._rules_table.setAlternatingRowColors(True)
+        self._rules_table.setSizeAdjustPolicy(QAbstractScrollArea.AdjustToContents)
         self._rules_table.itemChanged.connect(self._update_command_preview)
 
         hh = self._rules_table.horizontalHeader()
@@ -169,7 +195,7 @@ class SettingsDialog(QDialog):
 
         layout.addLayout(preview_row)
 
-        return grp
+        return container
 
     # ================================================================== load / save
 

@@ -44,7 +44,9 @@ class LogModel(QAbstractTableModel):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._records: List[LogRecord] = []
-        self._font = QFont("Courier New", 9)
+        # Modern monospaced font stack
+        self._font = QFont("JetBrains Mono, Cascadia Code, Consolas, Menlo, monospace", 9)
+        self._font.setStyleStrategy(QFont.PreferAntialias)
         # Color config — initialised from constants, updated via set_color_config()
         self._level_fg: dict[str, QColor] = dict(LEVEL_FG)
         self._level_bg: dict[str, QColor] = dict(LEVEL_BG)

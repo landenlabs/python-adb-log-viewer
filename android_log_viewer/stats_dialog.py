@@ -80,37 +80,37 @@ class StatsDialog(QDialog):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setSpacing(6)
+        root.setSpacing(10)
+        root.setContentsMargins(12, 12, 12, 12)
 
         splitter = QSplitter(Qt.Horizontal)
         splitter.addWidget(self._build_pid_panel())
         splitter.addWidget(self._build_tag_panel())
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 1)
+        splitter.setHandleWidth(2)
         root.addWidget(splitter, stretch=1)
 
         # ---- button row ----
         btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
 
-        self._btn_refresh_stats = QPushButton("Refresh Stats")
+        self._btn_refresh_stats = QPushButton("⟳ Stats")
         self._btn_refresh_stats.setToolTip("Repopulate tables from current data")
         btn_row.addWidget(self._btn_refresh_stats)
 
-        self._btn_refresh_names = QPushButton("Refresh Names  (adb ps)")
-        self._btn_refresh_names.setToolTip("Run 'adb shell ps -A' to resolve PIDs to process names")
+        self._btn_refresh_names = QPushButton("⟳ Names")
+        self._btn_refresh_names.setToolTip("Resolve PIDs to process names via 'adb ps'")
         btn_row.addWidget(self._btn_refresh_names)
 
-        btn_row.addSpacing(24)
+        btn_row.addSpacing(16)
 
-        self._btn_filter = QPushButton("Filter Selected")
-        self._btn_filter.setToolTip(
-            "Apply selections as a filter on the main log list.\n"
-            "Empty selection = no restriction for that dimension."
-        )
+        self._btn_filter = QPushButton("Apply Filter")
+        self._btn_filter.setToolTip("Filter main log list by selected PIDs/Tags")
+        self._btn_filter.setMinimumWidth(100)
         btn_row.addWidget(self._btn_filter)
 
         self._btn_clear_filter = QPushButton("Clear Filter")
-        self._btn_clear_filter.setToolTip("Remove the stats filter from the main log list")
         btn_row.addWidget(self._btn_clear_filter)
 
         btn_row.addStretch()

@@ -259,12 +259,14 @@ class TimelineWidget(QWidget):
             elif key == self._hover_key:
                 color = color.lighter(115)
 
-            bar_h = max(1, int((total / self._max_count) * (bar_area_h - 4)))
+            bar_h = max(2, int((total / self._max_count) * (bar_area_h - 6)))
             x = int(_MARGIN_LEFT + i * bar_w)
             bar_px_w = max(1, int(bar_w) - (1 if bar_w >= 3 else 0))
             y = bar_area_h - bar_h
 
-            painter.fillRect(x, y, bar_px_w, bar_h, color)
+            painter.setBrush(color)
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(x, y, bar_px_w, bar_h, 2, 2)
 
         # Range overlay: semi-transparent fill + edge lines
         if has_range:

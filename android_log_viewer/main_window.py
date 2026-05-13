@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import List, Optional, Set
 
-from PySide6.QtCore import QModelIndex, QPoint, QTimer, Qt
+from PySide6.QtCore import QModelIndex, QPoint, QSize, QTimer, Qt
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
@@ -114,33 +114,45 @@ class MainWindow(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
-        root.setSpacing(2)
-        root.setContentsMargins(4, 2, 4, 2)
+        root.setSpacing(0)  # Flush layout
+        root.setContentsMargins(0, 0, 0, 0)
 
         self._build_toolbar()
-        root.addWidget(self._build_filter_bar())
+        
+        # Filter bar gets a slightly different background in CSS usually, 
+        # but let's ensure it has some padding here.
+        filter_container = QWidget()
+        filter_container.setObjectName("filter_container")
+        filter_layout = QVBoxLayout(filter_container)
+        filter_layout.setContentsMargins(8, 4, 8, 4)
+        filter_layout.addWidget(self._build_filter_bar())
+        root.addWidget(filter_container)
 
         splitter = QSplitter(Qt.Vertical)
+        splitter.setHandleWidth(1)
 
         # -- log table
         self._table = QTableView()
         self._table.setModel(self._proxy)
         self._table.setSelectionBehavior(QTableView.SelectRows)
-        self._table.setSelectionMode(QTableView.SingleSelection)
-        self._table.setAlternatingRowColors(False)
+        self._table.setSelectionMode(QTableView.ExtendedSelection)
+        self._table.setAlternatingRowColors(True)
         self._table.setShowGrid(False)
         self._table.setWordWrap(False)
         self._table.verticalHeader().setVisible(False)
         hh = self._table.horizontalHeader()
         hh.setStretchLastSection(True)
-        hh.resizeSection(0, 170)  # timestamp
-        hh.resizeSection(1, 55)   # pid
-        hh.resizeSection(2, 55)   # tid
-        hh.resizeSection(3, 38)   # level
-        hh.resizeSection(4, 170)  # tag
+        hh.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        hh.resizeSection(0, 180)  # timestamp
+        hh.resizeSection(1, 60)   # pid
+        hh.resizeSection(2, 60)   # tid
+        hh.resizeSection(3, 40)   # level
+        hh.resizeSection(4, 180)  # tag
+        
         vh = self._table.verticalHeader()
-        vh.setDefaultSectionSize(18)
+        vh.setDefaultSectionSize(20) # Slightly taller for readability
         vh.setSectionResizeMode(QHeaderView.Fixed)
+        
         self._table.setContextMenuPolicy(Qt.CustomContextMenu)
         self._highlight_delegate = HighlightDelegate(self._table)
         self._table.setItemDelegateForColumn(COL_TAG, self._highlight_delegate)
@@ -208,95 +220,68 @@ class MainWindow(QMainWindow):
     def _build_toolbar(self) -> None:
         tb = QToolBar("Main", self)
         tb.setMovable(False)
+        tb.setIconSize(QSize(18, 18))
         self.addToolBar(tb)
-
-        self._btn_settings = QPushButton("Settings")
-        self._btn_settings.setToolTip("Configure ADB buffers and exclusion rules")
-        tb.addWidget(self._btn_settings)
-        tb.addSeparator()
-
-        tb.addWidget(QLabel(" Device: "))
-        self._device_combo = QComboBox()
-        self._device_combo.setMinimumWidth(160)
-        self._device_combo.setToolTip("Select the ADB device to monitor")
-        tb.addWidget(self._device_combo)
-
-        self._btn_refresh = QPushButton("⟳")
-        self._btn_refresh.setToolTip("Refresh device list")
-        self._btn_refresh.setMaximumWidth(30)
-        tb.addWidget(self._btn_refresh)
-        tb.addSeparator()
 
         self._btn_connect = QPushButton("Connect")
         self._btn_connect.setCheckable(True)
-        self._btn_connect.setMinimumWidth(90)
-        self._btn_connect.setToolTip(
-            "Start streaming adb logcat from the selected device.\n"
-            "Click again to disconnect."
-        )
+        self._btn_connect.setMinimumWidth(80)
+        self._btn_connect.setToolTip("Start/Stop streaming logs")
         tb.addWidget(self._btn_connect)
+
+        tb.addSeparator()
+        tb.addWidget(QLabel(" Device: "))
+        self._device_combo = QComboBox()
+        self._device_combo.setMinimumWidth(140)
+        tb.addWidget(self._device_combo)
+
+        self._btn_refresh = QPushButton("⟳")
+        self._btn_refresh.setFixedWidth(32)
+        self._btn_refresh.setToolTip("Refresh device list")
+        tb.addWidget(self._btn_refresh)
+
+        tb.addSeparator()
 
         self._btn_record = QPushButton("● REC")
         self._btn_record.setCheckable(True)
         self._btn_record.setChecked(True)
-        self._btn_record.setToolTip(
-            "Toggle database recording.\n"
-            "Red ● — logs are being saved to the database.\n"
-            "Gray ○ — logs are shown live but NOT written to the database."
-        )
-        self._btn_record.setStyleSheet("color: #C62828; font-weight: bold;")
+        self._btn_record.setFixedWidth(75)
+        self._btn_record.setToolTip("Toggle recording to database")
+        self._btn_record.setStyleSheet("color: #ff5555; font-weight: bold;")
         tb.addWidget(self._btn_record)
-        tb.addSeparator()
 
         self._btn_clear = QPushButton("Clear")
-        self._btn_clear.setToolTip(
-            "Clear the log view and in-memory database.\n"
-            "Also flushes the device ring buffer (adb logcat -c)\n"
-            "so old logs don't replay on the next connect."
-        )
+        self._btn_clear.setToolTip("Clear logs and device buffer")
         tb.addWidget(self._btn_clear)
+
         tb.addSeparator()
 
-        self._btn_save = QPushButton("Save…")
-        self._btn_save.setToolTip(
-            "Save current logs to disk.\n"
-            "  .db  — SQLite database (full fidelity, re-openable)\n"
-            "  .txt — plain text of visible (filtered) rows\n"
-            "Shortcut: Ctrl+S"
-        )
+        self._btn_save = QPushButton("Save")
         tb.addWidget(self._btn_save)
 
-        self._btn_open = QPushButton("Open…")
-        self._btn_open.setToolTip(
-            "Load a previously saved log file.\n"
-            "  .db  — SQLite database saved by this app\n"
-            "  .txt / .log — plain logcat text\n"
-            "Shortcut: Ctrl+O"
-        )
+        self._btn_open = QPushButton("Open")
         tb.addWidget(self._btn_open)
+
         tb.addSeparator()
 
-        self._chk_autoscroll = QCheckBox("Auto-scroll")
+        self._chk_autoscroll = QCheckBox("Scroll")
         self._chk_autoscroll.setChecked(True)
-        self._chk_autoscroll.setToolTip(
-            "Keep the log table scrolled to the latest entry.\n"
-            "Automatically disabled when you scroll up manually."
-        )
+        self._chk_autoscroll.setToolTip("Auto-scroll to latest")
         tb.addWidget(self._chk_autoscroll)
 
         tb.addSeparator()
 
         self._btn_stats = QPushButton("Stats")
-        self._btn_stats.setToolTip("Open PID / Tag statistics and filter dialog")
         tb.addWidget(self._btn_stats)
 
-        self._btn_memory = QPushButton("Memory")
-        self._btn_memory.setToolTip("Open live per-process memory monitor")
+        self._btn_memory = QPushButton("Mem")
         tb.addWidget(self._btn_memory)
 
         self._btn_colors = QPushButton("Colors")
-        self._btn_colors.setToolTip("Configure log level and pattern-based row colors")
         tb.addWidget(self._btn_colors)
+
+        self._btn_settings = QPushButton("Config")
+        tb.addWidget(self._btn_settings)
 
         # Push ? button to the far right
         _spacer = QWidget()
@@ -304,8 +289,7 @@ class MainWindow(QMainWindow):
         tb.addWidget(_spacer)
 
         self._btn_about = QPushButton("?")
-        self._btn_about.setToolTip("About Android Log Viewer")
-        self._btn_about.setFixedWidth(28)
+        self._btn_about.setFixedWidth(32)
         tb.addWidget(self._btn_about)
 
         # keyboard shortcuts
@@ -322,7 +306,7 @@ class MainWindow(QMainWindow):
         self._level_cbs: dict[str, QCheckBox] = {}
         for lvl in LEVELS:
             cb = QCheckBox(lvl)
-            cb.setChecked(True)
+            cb.setChecked(lvl in self._settings.level_filters)
             cb.setToolTip(LEVEL_NAMES[lvl])
             self._level_cbs[lvl] = cb
             row.addWidget(cb)
@@ -332,24 +316,22 @@ class MainWindow(QMainWindow):
         row.addWidget(QLabel("Tag:"))
         self._tag_edit = QLineEdit()
         self._tag_edit.setPlaceholderText("regex…")
-        self._tag_edit.setMaximumWidth(180)
         self._tag_edit.setClearButtonEnabled(True)
         self._tag_edit.setToolTip(
             "Filter by tag name (regex, case-insensitive).\n"
             "Shortcut: Ctrl+L"
         )
-        row.addWidget(self._tag_edit)
+        row.addWidget(self._tag_edit, stretch=1)
 
         row.addWidget(QLabel("Text:"))
         self._text_edit = QLineEdit()
         self._text_edit.setPlaceholderText("regex…")
-        self._text_edit.setMaximumWidth(260)
         self._text_edit.setClearButtonEnabled(True)
         self._text_edit.setToolTip(
             "Filter by message text or tag (regex, case-insensitive).\n"
             "Shortcut: Ctrl+F"
         )
-        row.addWidget(self._text_edit)
+        row.addWidget(self._text_edit, stretch=1)
 
         self._btn_clear_filters = QPushButton("✕ Filters")
         self._btn_clear_filters.setToolTip("Reset all level, tag, and text filters")
@@ -371,7 +353,6 @@ class MainWindow(QMainWindow):
         self._btn_clear_range.setVisible(False)
         row.addWidget(self._btn_clear_range)
 
-        row.addStretch()
         return frame
 
     # ================================================================== wiring
@@ -434,6 +415,11 @@ class MainWindow(QMainWindow):
         text_focus.setShortcut(QKeySequence("Ctrl+F"))
         text_focus.triggered.connect(self._text_edit.setFocus)
         self.addAction(text_focus)
+
+        copy_rows_action = QAction("Copy Selected Rows", self._table)
+        copy_rows_action.setShortcut(QKeySequence("Ctrl+C"))
+        copy_rows_action.triggered.connect(self._copy_selected_rows)
+        self._table.addAction(copy_rows_action)
 
         # Zoom shortcuts  (Ctrl++  Ctrl+=  Ctrl−  Ctrl+0)
         for keys, slot in [
@@ -617,6 +603,8 @@ class MainWindow(QMainWindow):
     def _on_filter_changed(self) -> None:
         levels = {lvl for lvl, cb in self._level_cbs.items() if cb.isChecked()}
         self._proxy.set_levels(levels)
+        self._settings.level_filters = levels
+        self._settings.save()
         self._update_status()
 
     def _clear_filters(self) -> None:
@@ -715,10 +703,17 @@ class MainWindow(QMainWindow):
         if rec is None:
             return
 
+        selected_rows = sorted({i.row() for i in self._table.selectedIndexes()})
+
         menu = QMenu(self)
         menu.addAction("Copy row", lambda: QApplication.clipboard().setText(
             f"{rec.timestamp}  {rec.pid:>6}  {rec.tid:>6}  {rec.level}  {rec.tag}: {rec.message}"
         ))
+        if len(selected_rows) > 1:
+            menu.addAction(
+                f"Copy {len(selected_rows)} selected rows",
+                self._copy_selected_rows,
+            )
         menu.addAction("Copy message", lambda: QApplication.clipboard().setText(rec.message))
         menu.addSeparator()
         menu.addAction(
@@ -727,9 +722,41 @@ class MainWindow(QMainWindow):
         )
         menu.addAction(
             "Exclude this tag",
-            lambda t=rec.tag: self._tag_edit.setText(f"(?!{re_escape_tag(t)})"),
+            lambda t=rec.tag: self._tag_edit.setText(f"^((?!{re_escape_tag(t)}).)*$"),
+        )
+        menu.addAction(
+            f"Save exclude rule for tag: {rec.tag}",
+            lambda t=rec.tag: self._add_exclude_rule_from_tag(t),
         )
         menu.exec(self._table.viewport().mapToGlobal(pos))
+
+    def _copy_selected_rows(self) -> None:
+        selected_rows = sorted({i.row() for i in self._table.selectedIndexes()})
+        lines = []
+        for row in selected_rows:
+            rec: Optional[LogRecord] = self._proxy.data(
+                self._proxy.index(row, 0), Qt.UserRole
+            )
+            if rec:
+                lines.append(
+                    f"{rec.timestamp}  {rec.pid:>6}  {rec.tid:>6}  {rec.level}  {rec.tag}: {rec.message}"
+                )
+        if lines:
+            QApplication.clipboard().setText("\n".join(lines))
+
+    def _add_exclude_rule_from_tag(self, tag: str) -> None:
+        from .app_settings import ExcludeRule
+        pattern = f"^{_re.escape(tag)}$"
+        if any(r.pattern == pattern and r.field == "TAG" for r in self._settings.exclude_rules):
+            self.statusBar().showMessage(f"Exclude rule already exists for tag: {tag}", 3000)
+            return
+        self._settings.exclude_rules.append(ExcludeRule(pattern=pattern, field="TAG", enabled=True))
+        self._settings.save()
+        self._proxy.set_exclude_rules(self._settings.exclude_rules)
+        self._update_settings_button_label()
+        if self._colors_dialog and self._colors_dialog.isVisible():
+            self._colors_dialog._load()
+        self.statusBar().showMessage(f"Exclude rule added for tag: {tag}", 3000)
 
     # ================================================================== status
     def _update_status(self) -> None:

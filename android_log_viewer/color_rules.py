@@ -4,19 +4,23 @@ from dataclasses import dataclass
 
 COLOR_RULE_FIELDS = ("TAG", "MESSAGE")
 
-# Default colors for D, I, W, E levels (V and F stay in constants.py)
+# Default colors for all levels
 DEFAULT_LEVEL_FG: dict[str, str] = {
+    "V": "#757575",
     "D": "#0D47A1",
     "I": "#212121",
     "W": "#E65100",
     "E": "#B71C1C",
+    "F": "#FFFFFF",
 }
 
 DEFAULT_LEVEL_BG: dict[str, str] = {
+    "V": "#EEEEEE",
     "D": "#E3F2FD",
     "I": "#FFFFFF",
     "W": "#FFF8E1",
     "E": "#FFEBEE",
+    "F": "#B71C1C",
 }
 
 

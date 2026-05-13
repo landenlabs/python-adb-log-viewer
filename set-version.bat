@@ -32,14 +32,10 @@ if not "!VTAG:~0,1!"=="v" set "VTAG=v!VTAG!"
 :: Strip leading 'v' for Python __version__
 set "PY_VERSION=!VTAG:~1!"
 
-:: Parse version components for Windows format
-for /f "tokens=1,2,3 delims=." %%a in ("!PY_VERSION!") do (
-    set "VER_MAJOR=%%a"
-    set "VER_MINOR=%%b"
-    set "VER_PATCH=%%c"
+:: Parse version components for Windows format (stripping leading zeros)
+for /f "usebackq" %%i in (`powershell -NoProfile -Command "$v = '!PY_VERSION!'.Split('.'); while ($v.Count -lt 4) { $v += '0' }; ($v[0..3] | ForEach-Object { [int]$_ }) -join ', '"`) do (
+    set "WIN_TUPLE=%%i"
 )
-if "!VER_PATCH!"=="" set "VER_PATCH=0"
-set "WIN_TUPLE=!VER_MAJOR!, !VER_MINOR!, !VER_PATCH!, 0"
 set "WIN_VERSION=!PY_VERSION!.0"
 
 echo Setting version to !VTAG! (Python: !PY_VERSION!)
@@ -54,8 +50,9 @@ echo !VTAG!>VERSION
 if %errorlevel% neq 0 ( echo ERROR: failed to update VERSION & exit /b 1 )
 
 :: Update README.md
+for /f "usebackq" %%i in (`powershell -NoProfile -Command "Get-Date -Format 'dd-MMM-yyyy'"`) do set "CURRENT_DATE=%%i"
 powershell -NoProfile -Command ^
-  "(Get-Content 'README.md') -replace '<!-- VERSION -->v[^ <]+', '<!-- VERSION -->!VTAG!' | Set-Content 'README.md'"
+  "(Get-Content 'README.md') -replace '<!-- VERSION -->v[^ <]+', '<!-- VERSION -->!VTAG!' -replace '<!-- DATE -->[^ <]+', '<!-- DATE -->!CURRENT_DATE!' | Set-Content 'README.md'"
 if %errorlevel% neq 0 ( echo ERROR: failed to update README.md & exit /b 1 )
 
 :: Update windows_version_info.py - filevers tuple

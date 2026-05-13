@@ -27,7 +27,9 @@ PY_VERSION="${VERSION#v}"
 
 # Derive Windows-format version components
 IFS='.' read -r VER_MAJOR VER_MINOR VER_PATCH <<< "$PY_VERSION"
-VER_PATCH="${VER_PATCH:-0}"
+VER_MAJOR=$((10#${VER_MAJOR:-0}))
+VER_MINOR=$((10#${VER_MINOR:-0}))
+VER_PATCH=$((10#${VER_PATCH:-0}))
 WIN_TUPLE="${VER_MAJOR}, ${VER_MINOR}, ${VER_PATCH}, 0"
 WIN_VERSION="${PY_VERSION}.0"
 
@@ -39,8 +41,10 @@ sed -i '' "s/__version__ = \".*\"/__version__ = \"${PY_VERSION}\"/" android_log_
 # Update VERSION file
 echo "${VERSION}" > VERSION
 
-# Update README.md (<!-- VERSION --> marker)
+# Update README.md (<!-- VERSION --> and <!-- DATE --> markers)
+CURRENT_DATE=$(date +"%d-%b-%Y")
 sed -i '' "s|<!-- VERSION -->v[^ <]*|<!-- VERSION -->${VERSION}|" README.md
+sed -i '' "s|<!-- DATE -->[^ <]*|<!-- DATE -->${CURRENT_DATE}|" README.md
 
 # Update windows_version_info.py
 sed -i '' -E "s/filevers=\([^)]+\)/filevers=(${WIN_TUPLE})/" windows_version_info.py

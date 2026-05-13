@@ -45,11 +45,14 @@ class AppSettings:
         self.buffers: Set[str] = {"main"}
         self.exclude_rules: List[ExcludeRule] = []
         self.theme: str = "light"
-        # Level colors — only D, I, W, E are user-configurable; V and F stay fixed
+        # Persist level filter checkbox states
+        self.level_filters: Set[str] = {"D", "I", "W", "E"}
+        # Level colors
         from .color_rules import DEFAULT_LEVEL_FG, DEFAULT_LEVEL_BG, ColorRule
         self.level_fg: dict[str, str] = dict(DEFAULT_LEVEL_FG)
         self.level_bg: dict[str, str] = dict(DEFAULT_LEVEL_BG)
         self.color_rules: List[ColorRule] = []
+        self.last_profile_name: str = ""
 
     # ------------------------------------------------------------------ persistence
 
@@ -58,6 +61,7 @@ class AppSettings:
         return {
             "buffers": sorted(self.buffers),
             "theme": self.theme,
+            "level_filters": sorted(list(self.level_filters)),
             "exclude_rules": [
                 {"pattern": r.pattern, "field": r.field, "enabled": r.enabled}
                 for r in self.exclude_rules
@@ -65,6 +69,7 @@ class AppSettings:
             "level_fg": self.level_fg,
             "level_bg": self.level_bg,
             "color_rules": [r.to_dict() for r in self.color_rules],
+            "last_profile_name": self.last_profile_name,
         }
 
     def save(self) -> None:
@@ -82,6 +87,8 @@ class AppSettings:
             s.buffers = parsed if parsed else {"main"}
         if "theme" in data and data["theme"] in ("light", "dark"):
             s.theme = data["theme"]
+        if "level_filters" in data:
+            s.level_filters = set(data["level_filters"])
         if "exclude_rules" in data:
             s.exclude_rules = [
                 ExcludeRule(
@@ -102,6 +109,8 @@ class AppSettings:
                 for r in data["color_rules"]
                 if isinstance(r, dict)
             ]
+        if "last_profile_name" in data and isinstance(data["last_profile_name"], str):
+            s.last_profile_name = data["last_profile_name"]
         return s
 
     @classmethod
