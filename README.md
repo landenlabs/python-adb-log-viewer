@@ -1,8 +1,8 @@
 <table border="0">
   <tr>
     <td>
-      <!-- VERSION -->v6.05.14<br>
-      <!-- DATE -->12-May-2026<br>
+      <!-- VERSION -->v6.05.15<br>
+      <!-- DATE -->13-May-2026<br>
       macOS &nbsp;|&nbsp; Windows &nbsp;|&nbsp; Linux<br>
       <a href="https://landenlabs.com">Home</a>
     </td>
@@ -58,7 +58,7 @@ A fast, cross-platform **ADB logcat viewer** built with Python and PySide6. Stre
 - **Tag and text regex** — case-insensitive regex filters on tag and message columns simultaneously
 - **Color coding** — configurable foreground/background colors per log level plus unlimited pattern-based rules
 - **Exclusion rules** — silently drop rows matching PID, tag, or message patterns before they reach the table
-- **SQLite persistence** — every session is recorded to an in-memory SQLite database; save to `.db` for full-fidelity replay or `.txt` for plain text export
+- **SQLite persistence** — every session is recorded to a temporary SQLite database on disk to keep RAM usage low; save to `.db` for full-fidelity replay or `.txt` for plain text export
 - **Open saved logs** — reload `.db` databases or import plain `.txt`/`.log` logcat files
 - **Timeline widget** — graphical bar chart of log volume over time; click to jump, drag to select a time range
 - **Time-range filter** — restrict the table to the selected timeline range in one click
