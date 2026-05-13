@@ -37,6 +37,7 @@ from .log_model import COL_MSG, COL_TAG, HighlightDelegate, LogFilterProxy, LogM
 from .log_record import LogRecord
 from .about_dialog import AboutDialog
 from .mem_dialog import MemDialog
+from .net_dialog import NetDialog
 from .settings_dialog import SettingsDialog
 from .stats import StatsTracker
 from .themes import apply_theme
@@ -82,6 +83,7 @@ class MainWindow(QMainWindow):
         self._stats_dialog: Optional[StatsDialog] = None
         self._settings_dialog: Optional[SettingsDialog] = None
         self._mem_dialog: Optional[MemDialog] = None
+        self._net_dialog: Optional[NetDialog] = None
         self._colors_dialog: Optional[ColorsDialog] = None
         self._selected_range: Optional[tuple] = None   # (from_key, to_key) or None
         self._range_filter_active: bool = False
@@ -318,6 +320,9 @@ class MainWindow(QMainWindow):
         self._btn_memory = QPushButton("Mem")
         tb.addWidget(self._btn_memory)
 
+        self._btn_network = QPushButton("Net")
+        tb.addWidget(self._btn_network)
+
         self._btn_colors = QPushButton("Colors")
         tb.addWidget(self._btn_colors)
 
@@ -429,6 +434,7 @@ class MainWindow(QMainWindow):
 
         self._btn_stats.clicked.connect(self._show_stats_dialog)
         self._btn_memory.clicked.connect(self._show_mem_dialog)
+        self._btn_network.clicked.connect(self._show_net_dialog)
         self._btn_settings.clicked.connect(self._show_settings_dialog)
         self._btn_colors.clicked.connect(self._show_colors_dialog)
         self._btn_about.clicked.connect(self._show_about_dialog)
@@ -1048,12 +1054,26 @@ class MainWindow(QMainWindow):
         self._mem_dialog.raise_()
         self._mem_dialog.activateWindow()
 
+    # ================================================================== network dialog
+    def _show_net_dialog(self) -> None:
+        if self._net_dialog is None:
+            self._net_dialog = NetDialog(parent=self)
+        device_text = self._device_combo.currentText()
+        self._net_dialog.set_device(
+            device_text if not device_text.startswith("(") else None
+        )
+        self._net_dialog.show()
+        self._net_dialog.raise_()
+        self._net_dialog.activateWindow()
+
     # ================================================================== lifecycle
     def closeEvent(self, event) -> None:
         # Stop any running background threads before Qt tears down the widget tree.
         # QThread::~QThread() aborts if the thread is still running.
         if self._mem_dialog is not None:
             self._mem_dialog.shutdown()
+        if self._net_dialog is not None:
+            self._net_dialog.shutdown()
         if self._stats_dialog is not None:
             self._stats_dialog.shutdown()
         self._stop_capture()
