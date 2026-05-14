@@ -33,6 +33,7 @@ from .app_settings import AppSettings
 from .colors_dialog import ColorsDialog
 from .constants import LEVEL_NAMES, LEVELS, MAX_RECORDS, PRUNE_SIZE
 from .database import LogDatabase
+from .filter_view_dialog import FilterViewDialog
 from .log_model import COL_MSG, COL_TAG, HighlightDelegate, LogFilterProxy, LogModel
 from .log_record import LogRecord
 from .about_dialog import AboutDialog
@@ -85,6 +86,7 @@ class MainWindow(QMainWindow):
         self._mem_dialog: Optional[MemDialog] = None
         self._net_dialog: Optional[NetDialog] = None
         self._colors_dialog: Optional[ColorsDialog] = None
+        self._filter_view: Optional[FilterViewDialog] = None
         self._selected_range: Optional[tuple] = None   # (from_key, to_key) or None
         self._range_filter_active: bool = False
 
@@ -330,6 +332,10 @@ class MainWindow(QMainWindow):
         self._btn_network = QPushButton("Net")
         tb.addWidget(self._btn_network)
 
+        self._btn_filter_view = QPushButton("View")
+        self._btn_filter_view.setToolTip("Open a second filtered log view")
+        tb.addWidget(self._btn_filter_view)
+
         self._btn_colors = QPushButton("Colors")
         tb.addWidget(self._btn_colors)
 
@@ -444,6 +450,7 @@ class MainWindow(QMainWindow):
         self._btn_stats.clicked.connect(self._show_stats_dialog)
         self._btn_memory.clicked.connect(self._show_mem_dialog)
         self._btn_network.clicked.connect(self._show_net_dialog)
+        self._btn_filter_view.clicked.connect(self._show_filter_view)
         self._btn_settings.clicked.connect(self._show_settings_dialog)
         self._btn_colors.clicked.connect(self._show_colors_dialog)
         self._btn_about.clicked.connect(self._show_about_dialog)
@@ -653,6 +660,8 @@ class MainWindow(QMainWindow):
         # --- UI path: update immediately on every emission ---
         self._model.append_records(records)
         self._timeline.add_records(records)
+        if self._filter_view is not None:
+            self._filter_view.add_records(records)
         if self._settings.timeline_follows_filter and self._timeline._filtered_buckets is not None:
             filtered_new = [r for r in records if self._proxy.accepts_for_timeline(r)]
             if filtered_new:
@@ -893,6 +902,8 @@ class MainWindow(QMainWindow):
         self._db.clear()
         self._next_row_id = 1
         self._timeline.reset([])
+        if self._filter_view is not None:
+            self._filter_view.reset_timeline([])
         self._stats.reset()
         self._proxy.set_pid_filter(set())
         self._proxy.set_tag_set_filter(set())
@@ -990,6 +1001,8 @@ class MainWindow(QMainWindow):
             self._db.insert_batch(records)
             self._model.append_records(records)
             self._timeline.reset(records)
+            if self._filter_view is not None:
+                self._filter_view.reset_timeline(records)
             self._stats.update(records)
             if self._stats_dialog:
                 self._stats_dialog._active_pids = set()
@@ -1025,6 +1038,8 @@ class MainWindow(QMainWindow):
         self._update_status()
         self._update_empty_overlay()
         self._rebuild_timeline_filter()
+        if self._filter_view is not None:
+            self._filter_view.apply_exclude_rules(self._settings.exclude_rules)
         self._refresh_devices()   # pick up any adb path change
         if self._reader:
             self.statusBar().showMessage(
@@ -1116,6 +1131,18 @@ class MainWindow(QMainWindow):
         self._mem_dialog.show()
         self._mem_dialog.raise_()
         self._mem_dialog.activateWindow()
+
+    # ================================================================== filter view dialog
+    def _show_filter_view(self) -> None:
+        if self._filter_view is None:
+            self._filter_view = FilterViewDialog(self._model, self._settings, parent=self)
+        device_text = self._device_combo.currentText()
+        self._filter_view.set_device(
+            device_text if not device_text.startswith("(") else None
+        )
+        self._filter_view.show()
+        self._filter_view.raise_()
+        self._filter_view.activateWindow()
 
     # ================================================================== network dialog
     def _show_net_dialog(self) -> None:
