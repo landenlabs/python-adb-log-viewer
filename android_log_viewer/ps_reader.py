@@ -14,12 +14,13 @@ class PsReader(QThread):
 
     names_ready = Signal(dict)   # Dict[str, str]
 
-    def __init__(self, device: Optional[str] = None, parent=None) -> None:
+    def __init__(self, device: Optional[str] = None, adb_exe: str = "adb", parent=None) -> None:
         super().__init__(parent)
         self.device = device
+        self.adb_exe = adb_exe
 
     def run(self) -> None:
-        cmd = ["adb"]
+        cmd = [self.adb_exe]
         if self.device:
             cmd += ["-s", self.device]
         cmd += ["shell", "ps", "-A"]

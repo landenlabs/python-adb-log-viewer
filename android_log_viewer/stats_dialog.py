@@ -73,6 +73,7 @@ class StatsDialog(QDialog):
         self._tracker: Optional[StatsTracker] = None
         self._ps_reader: Optional[PsReader] = None
         self._device: Optional[str] = None
+        self._adb_exe: str = "adb"
 
         self._build_ui()
 
@@ -299,7 +300,7 @@ class StatsDialog(QDialog):
     def _on_refresh_names(self) -> None:
         if self._ps_reader and self._ps_reader.isRunning():
             return
-        self._ps_reader = PsReader(device=self._device, parent=self)
+        self._ps_reader = PsReader(device=self._device, adb_exe=self._adb_exe, parent=self)
         self._ps_reader.names_ready.connect(self._on_names_ready)
         self._ps_reader.start()
         self._btn_refresh_names.setEnabled(False)
@@ -347,6 +348,9 @@ class StatsDialog(QDialog):
 
     def set_device(self, device: Optional[str]) -> None:
         self._device = device
+
+    def set_adb_exe(self, exe: str) -> None:
+        self._adb_exe = exe
 
     @property
     def active_pids(self) -> Set[str]:

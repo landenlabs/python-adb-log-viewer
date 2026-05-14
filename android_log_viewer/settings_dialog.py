@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from typing import List, Optional
 
 from PySide6.QtCore import Qt, Signal
@@ -11,6 +12,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QFileDialog,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -46,7 +48,7 @@ class SettingsDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Settings")
-        self.resize(760, 640)
+        self.resize(760, 680)
         self.setModal(False)
         self._settings = settings
         self._device = device
@@ -68,6 +70,7 @@ class SettingsDialog(QDialog):
         scroll_layout.setSpacing(10)
 
         scroll_layout.addWidget(self._build_appearance_group())
+        scroll_layout.addWidget(self._build_adb_group())
 
         self._buffers_box = CollapsibleBox("ADB Log Buffers")
         self._buffers_box.add_widget(self._build_buffers_content())
@@ -113,6 +116,60 @@ class SettingsDialog(QDialog):
         )
         layout.addWidget(self._timeline_filter_cb)
         layout.addStretch()
+        return grp
+
+    # ------------------------------------------------------------------ adb executable
+
+    def _build_adb_group(self) -> QWidget:
+        from .adb_reader import default_adb_exe
+        grp = QGroupBox("ADB Executable")
+        layout = QVBoxLayout(grp)
+        layout.setSpacing(6)
+
+        # Error banner — hidden until show_adb_error() is called or path check fails
+        self._adb_error_banner = QLabel()
+        self._adb_error_banner.setWordWrap(True)
+        self._adb_error_banner.setStyleSheet(
+            "background-color: #B71C1C; color: #FFFFFF;"
+            "padding: 6px 10px; border-radius: 4px; font-weight: bold;"
+        )
+        self._adb_error_banner.setVisible(False)
+        layout.addWidget(self._adb_error_banner)
+
+        # Path row
+        path_row = QHBoxLayout()
+        path_row.addWidget(QLabel("Path:"))
+        self._adb_path_edit = QLineEdit()
+        self._adb_path_edit.setPlaceholderText(
+            f"Leave empty to use default ({default_adb_exe()})"
+        )
+        self._adb_path_edit.setToolTip(
+            "Full path to the adb executable, or leave empty to search PATH.\n"
+            "Example: /usr/local/bin/adb  or  C:\\platform-tools\\adb.exe"
+        )
+        self._adb_path_edit.textChanged.connect(self._on_adb_path_changed)
+        path_row.addWidget(self._adb_path_edit, stretch=1)
+
+        self._adb_browse_btn = QPushButton("Browse…")
+        self._adb_browse_btn.setToolTip("Pick the adb executable from the filesystem")
+        self._adb_browse_btn.clicked.connect(self._on_browse_adb)
+        path_row.addWidget(self._adb_browse_btn)
+
+        self._adb_test_btn = QPushButton("Test")
+        self._adb_test_btn.setToolTip("Run 'adb version' to verify the executable works")
+        self._adb_test_btn.clicked.connect(self._on_test_adb)
+        path_row.addWidget(self._adb_test_btn)
+
+        layout.addLayout(path_row)
+
+        # Status row
+        status_row = QHBoxLayout()
+        status_row.addWidget(QLabel("Status:"))
+        self._adb_status_lbl = QLabel("—")
+        self._adb_status_lbl.setStyleSheet("font-size: 11px;")
+        status_row.addWidget(self._adb_status_lbl, stretch=1)
+        layout.addLayout(status_row)
+
         return grp
 
     # ------------------------------------------------------------------ buffers
@@ -218,6 +275,13 @@ class SettingsDialog(QDialog):
         self._theme_combo.setCurrentText(self._settings.theme.capitalize())
         self._merge_cb.setChecked(self._settings.merge_same_time_tag)
         self._timeline_filter_cb.setChecked(self._settings.timeline_follows_filter)
+
+        # ADB path — block signal so _on_adb_path_changed fires once at the end
+        self._adb_path_edit.blockSignals(True)
+        self._adb_path_edit.setText(self._settings.adb_path)
+        self._adb_path_edit.blockSignals(False)
+        self._on_adb_path_changed(self._settings.adb_path)
+
         # Block signals during rebuild to avoid spurious _update_command_preview calls
         for name, cb in self._buffer_cbs.items():
             cb.blockSignals(True)
@@ -236,15 +300,84 @@ class SettingsDialog(QDialog):
         self._settings.theme = self._theme_combo.currentText().lower()
         self._settings.merge_same_time_tag = self._merge_cb.isChecked()
         self._settings.timeline_follows_filter = self._timeline_filter_cb.isChecked()
+        self._settings.adb_path = self._adb_path_edit.text().strip()
         chosen = {name for name, cb in self._buffer_cbs.items() if cb.isChecked()}
         self._settings.buffers = chosen if chosen else {"main"}
         self._settings.exclude_rules = self._collect_rules()
+        self._adb_error_banner.setVisible(False)
         self.settings_applied.emit()
         self.hide()
 
     def set_device(self, device: Optional[str]) -> None:
         self._device = device
         self._update_command_preview()
+
+    # ================================================================== adb helpers
+
+    def _on_adb_path_changed(self, text: str = "") -> None:
+        from .adb_reader import check_adb
+        ok, msg = check_adb(text)
+        if ok:
+            self._adb_status_lbl.setText(f"✓  {msg}")
+            self._adb_status_lbl.setStyleSheet("color: green; font-size: 11px;")
+            # Auto-hide the error banner once the path resolves successfully
+            self._adb_error_banner.setVisible(False)
+        else:
+            self._adb_status_lbl.setText(f"✗  {msg}")
+            self._adb_status_lbl.setStyleSheet("color: #C62828; font-size: 11px;")
+        self._update_command_preview()
+
+    def _on_browse_adb(self) -> None:
+        import os
+        start_dir = ""
+        current = self._adb_path_edit.text().strip()
+        if current and os.path.isabs(current):
+            start_dir = os.path.dirname(current)
+
+        if os.name == "nt":
+            file_filter = "Executables (*.exe);;All files (*)"
+        else:
+            file_filter = "All files (*)"
+
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select adb executable", start_dir, file_filter
+        )
+        if path:
+            self._adb_path_edit.setText(path)
+
+    def _on_test_adb(self) -> None:
+        from .adb_reader import resolve_adb
+        exe = resolve_adb(self._adb_path_edit.text())
+        try:
+            result = subprocess.run(
+                [exe, "version"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            output = (result.stdout or result.stderr or "").strip()
+            first_line = output.splitlines()[0] if output else "(no output)"
+            self._adb_status_lbl.setText(f"✓  {first_line}")
+            self._adb_status_lbl.setStyleSheet("color: green; font-size: 11px;")
+            self._adb_error_banner.setVisible(False)
+        except FileNotFoundError:
+            self._adb_status_lbl.setText(f"✗  '{exe}' not found")
+            self._adb_status_lbl.setStyleSheet("color: #C62828; font-size: 11px;")
+        except subprocess.TimeoutExpired:
+            self._adb_status_lbl.setText(f"✗  '{exe}' timed out")
+            self._adb_status_lbl.setStyleSheet("color: #C62828; font-size: 11px;")
+        except Exception as exc:
+            self._adb_status_lbl.setText(f"✗  {exc}")
+            self._adb_status_lbl.setStyleSheet("color: #C62828; font-size: 11px;")
+
+    def show_adb_error(self, message: str) -> None:
+        """Show a prominent error banner and bring the dialog to the front.
+        Called from MainWindow when adb cannot be found at startup."""
+        self._adb_error_banner.setText(f"⚠  ADB not found — {message}")
+        self._adb_error_banner.setVisible(True)
+        self.show()
+        self.raise_()
+        self.activateWindow()
 
     # ================================================================== row helpers
 
@@ -306,8 +439,9 @@ class SettingsDialog(QDialog):
     # ================================================================== command preview
 
     def _update_command_preview(self) -> None:
-        from .adb_reader import build_adb_command
+        from .adb_reader import build_adb_command, resolve_adb
         buffers = {name for name, cb in self._buffer_cbs.items() if cb.isChecked()} or {"main"}
         rules = self._collect_rules()
-        cmd = build_adb_command(self._device, buffers, rules)
+        exe = resolve_adb(self._adb_path_edit.text())
+        cmd = build_adb_command(self._device, buffers, rules, adb_exe=exe)
         self._cmd_preview.setText(" ".join(cmd))

@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .adb_reader import AdbReader, list_devices, parse_line
+from .adb_reader import AdbReader, check_adb, find_adb_on_path, list_devices, parse_line, resolve_adb
 from .version import __version__
 from .app_settings import AppSettings
 from .colors_dialog import ColorsDialog
@@ -122,6 +122,7 @@ class MainWindow(QMainWindow):
             self._apply_initial_filters(initial_tag, initial_text)
 
         self._update_empty_overlay()
+        QTimer.singleShot(0, self._check_adb_on_startup)
 
     # ================================================================== background image
     def _load_bg_pixmaps(self) -> None:
@@ -500,10 +501,24 @@ class MainWindow(QMainWindow):
         if self._device_combo.count() == 1 and not current.startswith("("):
             QTimer.singleShot(0, lambda: self._btn_connect.setChecked(True))
 
+    # ================================================================== adb helpers
+    def _adb_exe(self) -> str:
+        """Return the resolved adb executable path to use for all subprocess calls."""
+        return find_adb_on_path(self._settings.adb_path) or resolve_adb(self._settings.adb_path)
+
+    def _check_adb_on_startup(self) -> None:
+        """Called once after the main window is shown. Opens settings with an error
+        banner if the configured (or default) adb executable cannot be found."""
+        ok, msg = check_adb(self._settings.adb_path)
+        if not ok:
+            self._show_settings_dialog()
+            if self._settings_dialog:
+                self._settings_dialog.show_adb_error(msg)
+
     # ================================================================== device
     def _refresh_devices(self) -> None:
         self._device_combo.clear()
-        devices = list_devices()
+        devices = list_devices(adb_exe=self._adb_exe())
         if devices:
             for d in devices:
                 self._device_combo.addItem(d)
@@ -562,6 +577,7 @@ class MainWindow(QMainWindow):
             device=device,
             buffers=self._settings.buffers,
             exclude_rules=self._settings.exclude_rules,
+            adb_exe=self._adb_exe(),
             parent=self,
         )
         self._reader.records_ready.connect(self._on_records_ready)
@@ -903,7 +919,7 @@ class MainWindow(QMainWindow):
         """Run 'adb logcat -c' in the background to flush the device ring buffer."""
         import subprocess as _sp
         device_text = self._device_combo.currentText()
-        cmd = ["adb"]
+        cmd = [self._adb_exe()]
         if not device_text.startswith("("):
             cmd += ["-s", device_text]
         cmd += ["logcat", "-c"]
@@ -1009,6 +1025,7 @@ class MainWindow(QMainWindow):
         self._update_status()
         self._update_empty_overlay()
         self._rebuild_timeline_filter()
+        self._refresh_devices()   # pick up any adb path change
         if self._reader:
             self.statusBar().showMessage(
                 "Buffer changes will take effect on the next Connect.", 5000
@@ -1033,6 +1050,7 @@ class MainWindow(QMainWindow):
         self._stats_dialog.set_device(
             device_text if not device_text.startswith("(") else None
         )
+        self._stats_dialog.set_adb_exe(self._adb_exe())
         self._stats_dialog.refresh(self._stats)
         self._stats_dialog.show()
         self._stats_dialog.raise_()
@@ -1094,6 +1112,7 @@ class MainWindow(QMainWindow):
         self._mem_dialog.set_device(
             device_text if not device_text.startswith("(") else None
         )
+        self._mem_dialog.set_adb_exe(self._adb_exe())
         self._mem_dialog.show()
         self._mem_dialog.raise_()
         self._mem_dialog.activateWindow()
@@ -1106,6 +1125,7 @@ class MainWindow(QMainWindow):
         self._net_dialog.set_device(
             device_text if not device_text.startswith("(") else None
         )
+        self._net_dialog.set_adb_exe(self._adb_exe())
         self._net_dialog.show()
         self._net_dialog.raise_()
         self._net_dialog.activateWindow()

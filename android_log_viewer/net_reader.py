@@ -36,9 +36,10 @@ class NetReader(QThread):
     stats_ready    = Signal(list)   # List[Dict[str, Any]]
     error_occurred = Signal(str)
 
-    def __init__(self, device: Optional[str] = None, parent=None) -> None:
+    def __init__(self, device: Optional[str] = None, adb_exe: str = "adb", parent=None) -> None:
         super().__init__(parent)
         self.device = device
+        self.adb_exe = adb_exe
 
     def run(self) -> None:
         try:
@@ -52,13 +53,13 @@ class NetReader(QThread):
             self.error_occurred.emit("Network poll timed out (10 s).")
         except FileNotFoundError:
             self.error_occurred.emit(
-                "Could not find 'adb'. Install Android SDK Platform Tools."
+                f"Could not find '{self.adb_exe}'. Install Android SDK Platform Tools."
             )
         except Exception as exc:
             self.error_occurred.emit(str(exc))
 
     def _shell(self, cmd: str) -> str:
-        base = ["adb"]
+        base = [self.adb_exe]
         if self.device:
             base += ["-s", self.device]
         result = subprocess.run(

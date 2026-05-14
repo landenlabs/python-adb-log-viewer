@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import re
+import shutil
 import subprocess
 import time
 from typing import List, Optional, Set
@@ -27,10 +29,45 @@ def _is_simple_tag(pattern: str) -> bool:
     return bool(_SIMPLE_TAG.match(pattern))
 
 
+# ------------------------------------------------------------------
+# ADB executable resolution
+# ------------------------------------------------------------------
+
+def default_adb_exe() -> str:
+    """Return the platform default adb executable name."""
+    return "adb.exe" if os.name == "nt" else "adb"
+
+
+def resolve_adb(configured: str) -> str:
+    """Return the executable to invoke: configured path if non-empty, else OS default."""
+    return configured.strip() or default_adb_exe()
+
+
+def find_adb_on_path(configured: str) -> Optional[str]:
+    """Locate the adb executable and return its absolute path, or None if not found."""
+    exe = resolve_adb(configured)
+    if os.path.isabs(exe):
+        return exe if os.path.isfile(exe) else None
+    return shutil.which(exe)
+
+
+def check_adb(configured: str) -> tuple[bool, str]:
+    """Return (available, message).
+    message is the resolved absolute path when available=True,
+    or a human-readable error when available=False."""
+    found = find_adb_on_path(configured)
+    if found:
+        return True, found
+    return False, f"'{resolve_adb(configured)}' not found on PATH"
+
+
+# ------------------------------------------------------------------
+
 def build_adb_command(
     device: Optional[str],
     buffers: Set[str],
     exclude_rules: Optional[List[ExcludeRule]] = None,
+    adb_exe: str = "adb",
 ) -> List[str]:
     """Return the full adb command list that AdbReader will execute.
 
@@ -39,7 +76,7 @@ def build_adb_command(
     All other exclusion (regex, PID, MESSAGE) is handled client-side by
     LogFilterProxy and is not reflected here.
     """
-    cmd = ["adb"]
+    cmd = [adb_exe]
     if device:
         cmd += ["-s", device]
     cmd += ["logcat", "-v", "threadtime"]
@@ -74,11 +111,11 @@ def parse_line(line: str) -> Optional[LogRecord]:
     return None
 
 
-def list_devices() -> List[str]:
+def list_devices(adb_exe: str = "adb") -> List[str]:
     """Return serial numbers of connected adb devices."""
     try:
         result = subprocess.run(
-            ["adb", "devices"],
+            [adb_exe, "devices"],
             capture_output=True,
             text=True,
             timeout=5,
@@ -109,18 +146,20 @@ class AdbReader(QThread):
         device: Optional[str] = None,
         buffers: Optional[Set[str]] = None,
         exclude_rules: Optional[List[ExcludeRule]] = None,
+        adb_exe: str = "adb",
         parent=None,
     ) -> None:
         super().__init__(parent)
         self.device = device
         self.buffers: Set[str] = buffers if buffers else {"main"}
         self.exclude_rules: List[ExcludeRule] = exclude_rules or []
+        self.adb_exe = adb_exe
         self._stop_flag = False
         self._process: Optional[subprocess.Popen] = None
 
     # ------------------------------------------------------------------
     def run(self) -> None:
-        cmd = build_adb_command(self.device, self.buffers, self.exclude_rules)
+        cmd = build_adb_command(self.device, self.buffers, self.exclude_rules, adb_exe=self.adb_exe)
 
         try:
             self._process = subprocess.Popen(
@@ -157,8 +196,9 @@ class AdbReader(QThread):
 
         except FileNotFoundError:
             self.error_occurred.emit(
-                "Could not find 'adb'.\n\n"
-                "Install Android SDK Platform Tools and make sure 'adb' is on PATH."
+                f"Could not find '{self.adb_exe}'.\n\n"
+                "Install Android SDK Platform Tools and make sure 'adb' is on PATH,\n"
+                "or set a custom path in Config → ADB Executable."
             )
         except Exception as exc:
             if not self._stop_flag:

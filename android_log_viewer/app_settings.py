@@ -55,6 +55,7 @@ class AppSettings:
         self.last_profile_name: str = ""
         self.merge_same_time_tag: bool = False
         self.timeline_follows_filter: bool = True
+        self.adb_path: str = ""   # empty = use platform default (adb / adb.exe)
 
     # ------------------------------------------------------------------ persistence
 
@@ -74,6 +75,7 @@ class AppSettings:
             "last_profile_name": self.last_profile_name,
             "merge_same_time_tag": self.merge_same_time_tag,
             "timeline_follows_filter": self.timeline_follows_filter,
+            "adb_path": self.adb_path,
         }
 
     def save(self) -> None:
@@ -119,6 +121,8 @@ class AppSettings:
             s.merge_same_time_tag = bool(data["merge_same_time_tag"])
         if "timeline_follows_filter" in data:
             s.timeline_follows_filter = bool(data["timeline_follows_filter"])
+        if "adb_path" in data and isinstance(data["adb_path"], str):
+            s.adb_path = data["adb_path"]
         return s
 
     @classmethod

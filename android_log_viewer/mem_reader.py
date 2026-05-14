@@ -24,12 +24,13 @@ class MemReader(QThread):
     stats_ready    = Signal(list)   # List[Dict[str, Any]], sorted rss desc
     error_occurred = Signal(str)
 
-    def __init__(self, device: Optional[str] = None, parent=None) -> None:
+    def __init__(self, device: Optional[str] = None, adb_exe: str = "adb", parent=None) -> None:
         super().__init__(parent)
         self.device = device
+        self.adb_exe = adb_exe
 
     def run(self) -> None:
-        cmd = ["adb"]
+        cmd = [self.adb_exe]
         if self.device:
             cmd += ["-s", self.device]
         cmd += ["shell", _SHELL_CMD]
@@ -40,7 +41,7 @@ class MemReader(QThread):
             self.error_occurred.emit("Memory poll timed out (30 s).")
         except FileNotFoundError:
             self.error_occurred.emit(
-                "Could not find 'adb'. Install Android SDK Platform Tools."
+                f"Could not find '{self.adb_exe}'. Install Android SDK Platform Tools."
             )
         except Exception as exc:
             self.error_occurred.emit(str(exc))

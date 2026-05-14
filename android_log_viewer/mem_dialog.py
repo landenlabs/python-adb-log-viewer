@@ -103,6 +103,7 @@ class MemDialog(QDialog):
         self.setModal(False)
 
         self._device: Optional[str] = None
+        self._adb_exe: str = "adb"
         self._reader: Optional[MemReader] = None
         self._grab_data: Dict[str, int] = {}   # pid -> grabbed rss (KB)
         self._grab_time: Optional[float] = None
@@ -264,6 +265,9 @@ class MemDialog(QDialog):
     def set_device(self, device: Optional[str]) -> None:
         self._device = device
 
+    def set_adb_exe(self, exe: str) -> None:
+        self._adb_exe = exe
+
     # ================================================================== refresh
 
     def _interval_ms(self) -> int:
@@ -287,7 +291,7 @@ class MemDialog(QDialog):
         self._progress_bar.setRange(0, 0)   # indeterminate busy animation
         self._btn_refresh.setEnabled(False)
         self._btn_refresh.setText("Refreshing")
-        self._reader = MemReader(device=self._device, parent=self)
+        self._reader = MemReader(device=self._device, adb_exe=self._adb_exe, parent=self)
         self._reader.stats_ready.connect(self._on_stats)
         self._reader.error_occurred.connect(self._on_error)
         self._reader.finished.connect(self._on_reader_done)
