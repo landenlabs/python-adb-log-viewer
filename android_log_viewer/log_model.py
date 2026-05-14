@@ -527,6 +527,30 @@ class LogFilterProxy(QSortFilterProxyModel):
                 return False
         return True
 
+    def accepts_for_timeline(self, rec: "LogRecord") -> bool:
+        """Like _accepts_record but skips the time range filter.
+        Used to build the filtered timeline without creating a feedback loop
+        between the range selection and the bars it contains."""
+        if rec.level not in self._allowed:
+            return False
+        if self._tag_rx and not self._tag_rx.search(rec.tag):
+            return False
+        if self._text_rx:
+            if not (self._text_rx.search(rec.message) or self._text_rx.search(rec.tag)):
+                return False
+        if self._pid_set and rec.pid not in self._pid_set:
+            return False
+        if self._tag_set and rec.tag not in self._tag_set:
+            return False
+        for pattern, field in self._exclude_rules:
+            if field == "PID" and pattern.search(rec.pid):
+                return False
+            elif field == "TAG" and pattern.search(rec.tag):
+                return False
+            elif field == "MESSAGE" and pattern.search(rec.message):
+                return False
+        return True
+
     # ------------------------------------------------------------------ helpers
     @staticmethod
     def _compile(pattern: str) -> Optional[re.Pattern]:

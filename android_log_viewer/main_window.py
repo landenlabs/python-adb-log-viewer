@@ -97,6 +97,12 @@ class MainWindow(QMainWindow):
         self._stats_refresh_timer.setInterval(2000)
         self._stats_refresh_timer.timeout.connect(self._refresh_stats_dialog_if_visible)
 
+        # Debounce timeline filter rebuilds (text inputs fire on every keystroke)
+        self._timeline_filter_timer = QTimer(self)
+        self._timeline_filter_timer.setSingleShot(True)
+        self._timeline_filter_timer.setInterval(300)
+        self._timeline_filter_timer.timeout.connect(self._rebuild_timeline_filter)
+
         self._bg_pixmaps: dict[str, Optional[QPixmap]] = {}
         self._load_bg_pixmaps()
 
@@ -416,8 +422,10 @@ class MainWindow(QMainWindow):
 
         self._tag_edit.textChanged.connect(self._proxy.set_tag_filter)
         self._tag_edit.textChanged.connect(self._update_status)
+        self._tag_edit.textChanged.connect(self._schedule_timeline_filter_rebuild)
         self._text_edit.textChanged.connect(self._proxy.set_text_filter)
         self._text_edit.textChanged.connect(self._update_status)
+        self._text_edit.textChanged.connect(self._schedule_timeline_filter_rebuild)
 
         self._proxy.rowsInserted.connect(self._on_proxy_rows_inserted)
         self._proxy.modelReset.connect(self._update_status)
@@ -629,6 +637,10 @@ class MainWindow(QMainWindow):
         # --- UI path: update immediately on every emission ---
         self._model.append_records(records)
         self._timeline.add_records(records)
+        if self._settings.timeline_follows_filter and self._timeline._filtered_buckets is not None:
+            filtered_new = [r for r in records if self._proxy.accepts_for_timeline(r)]
+            if filtered_new:
+                self._timeline.add_filtered_records(filtered_new)
         self._stats.update(records)
         self._update_status()
 
@@ -654,12 +666,40 @@ class MainWindow(QMainWindow):
         self._settings.level_filters = levels
         self._settings.save()
         self._update_status()
+        self._schedule_timeline_filter_rebuild()
 
     def _clear_filters(self) -> None:
         for cb in self._level_cbs.values():
             cb.setChecked(True)
         self._tag_edit.clear()
         self._text_edit.clear()
+
+    # ================================================================== timeline filter
+    def _schedule_timeline_filter_rebuild(self) -> None:
+        if not self._timeline_filter_timer.isActive():
+            self._timeline_filter_timer.start()
+
+    def _has_active_timeline_filter(self) -> bool:
+        p = self._proxy
+        all_levels = {"V", "D", "I", "W", "E", "F"}
+        return bool(
+            p._allowed != all_levels
+            or p._tag_rx is not None
+            or p._text_rx is not None
+            or p._pid_set
+            or p._tag_set
+            or p._exclude_rules
+        )
+
+    def _rebuild_timeline_filter(self) -> None:
+        if not self._settings.timeline_follows_filter or not self._has_active_timeline_filter():
+            self._timeline.set_filtered_records(None)
+            return
+        filtered = [
+            r for r in self._model.all_records()
+            if not r.is_sub_row and self._proxy.accepts_for_timeline(r)
+        ]
+        self._timeline.set_filtered_records(filtered)
 
     # ================================================================== scroll
     def _on_autoscroll_toggled(self, checked: bool) -> None:
@@ -817,6 +857,7 @@ class MainWindow(QMainWindow):
         self._update_settings_button_label()
         if self._colors_dialog and self._colors_dialog.isVisible():
             self._colors_dialog._load()
+        self._rebuild_timeline_filter()
         self.statusBar().showMessage(f"Exclude rule added for tag: {tag}", 3000)
 
     # ================================================================== status
@@ -941,6 +982,7 @@ class MainWindow(QMainWindow):
                 self._stats_dialog._update_status_label()
             self._update_stats_button_label()
             self._update_status()
+            self._rebuild_timeline_filter()
         except Exception as exc:
             QMessageBox.critical(self, "Open Error", str(exc))
 
@@ -966,6 +1008,7 @@ class MainWindow(QMainWindow):
         self._update_settings_button_label()
         self._update_status()
         self._update_empty_overlay()
+        self._rebuild_timeline_filter()
         if self._reader:
             self.statusBar().showMessage(
                 "Buffer changes will take effect on the next Connect.", 5000
@@ -1004,6 +1047,7 @@ class MainWindow(QMainWindow):
         self._proxy.set_tag_set_filter(tags)
         self._update_stats_button_label()
         self._update_status()
+        self._rebuild_timeline_filter()
 
     def _update_stats_button_label(self) -> None:
         if self._stats_dialog:

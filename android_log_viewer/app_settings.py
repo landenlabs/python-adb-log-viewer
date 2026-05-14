@@ -54,6 +54,7 @@ class AppSettings:
         self.color_rules: List[ColorRule] = []
         self.last_profile_name: str = ""
         self.merge_same_time_tag: bool = False
+        self.timeline_follows_filter: bool = True
 
     # ------------------------------------------------------------------ persistence
 
@@ -72,6 +73,7 @@ class AppSettings:
             "color_rules": [r.to_dict() for r in self.color_rules],
             "last_profile_name": self.last_profile_name,
             "merge_same_time_tag": self.merge_same_time_tag,
+            "timeline_follows_filter": self.timeline_follows_filter,
         }
 
     def save(self) -> None:
@@ -115,6 +117,8 @@ class AppSettings:
             s.last_profile_name = data["last_profile_name"]
         if "merge_same_time_tag" in data:
             s.merge_same_time_tag = bool(data["merge_same_time_tag"])
+        if "timeline_follows_filter" in data:
+            s.timeline_follows_filter = bool(data["timeline_follows_filter"])
         return s
 
     @classmethod

@@ -27,6 +27,11 @@ class TimelineWidget(QWidget):
     Bar colour = worst severity level seen in that second.
     Click a bar  → emits timestamp_selected(str) to jump the table.
     Click + drag → selects a time range; emits range_selected(from_key, to_key).
+
+    Supports two data layers:
+    - Master buckets: all records, always maintained.
+    - Filtered buckets: subset matching active filters, optional.
+    When filtered buckets are set the widget paints from those; otherwise from master.
     """
 
     timestamp_selected = Signal(str)
@@ -36,10 +41,16 @@ class TimelineWidget(QWidget):
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
-        # {ts_key: {level: count}}  ts_key = "MM-DD HH:MM:SS" (17 chars)
+        # Master: all records ever added
         self._buckets: Dict[str, Dict[str, int]] = {}
         self._keys: List[str] = []      # sorted chronologically
         self._max_count: int = 1
+
+        # Filtered: only records that pass the active filter (None = inactive)
+        self._filtered_buckets: Optional[Dict[str, Dict[str, int]]] = None
+        self._filtered_keys: Optional[List[str]] = None
+        self._filtered_max: Optional[int] = None
+
         self._hover_key: Optional[str] = None
         self._sel_key: Optional[str] = None
 
@@ -63,8 +74,22 @@ class TimelineWidget(QWidget):
         self._repaint_timer.timeout.connect(self.update)
 
     # ------------------------------------------------------------------
+    # Active-layer accessors: filtered when set, else master
+    @property
+    def _active_buckets(self) -> Dict[str, Dict[str, int]]:
+        return self._filtered_buckets if self._filtered_buckets is not None else self._buckets
+
+    @property
+    def _active_keys(self) -> List[str]:
+        return self._filtered_keys if self._filtered_keys is not None else self._keys
+
+    @property
+    def _active_max(self) -> int:
+        return self._filtered_max if self._filtered_max is not None else self._max_count
+
+    # ------------------------------------------------------------------
     def add_records(self, records) -> None:
-        """Incremental add — O(len(records))."""
+        """Incremental add to master buckets — O(len(records))."""
         changed = False
         for rec in records:
             key = rec.timestamp[:17]   # "MM-DD HH:MM:SS" (drop .mmm)
@@ -82,11 +107,57 @@ class TimelineWidget(QWidget):
         if changed and not self._repaint_timer.isActive():
             self._repaint_timer.start()
 
+    def set_filtered_records(self, records) -> None:
+        """Rebuild filtered buckets from a pre-filtered record list.
+        Pass None to deactivate filtered mode and revert to master."""
+        if records is None:
+            self._filtered_buckets = None
+            self._filtered_keys = None
+            self._filtered_max = None
+        else:
+            fb: Dict[str, Dict[str, int]] = {}
+            fk: List[str] = []
+            fm = 1
+            for rec in records:
+                key = rec.timestamp[:17]
+                if key not in fb:
+                    fb[key] = defaultdict(int)
+                    fk.append(key)
+                fb[key][rec.level] += 1
+                total = sum(fb[key].values())
+                if total > fm:
+                    fm = total
+            self._filtered_buckets = fb
+            self._filtered_keys = fk
+            self._filtered_max = fm
+        if not self._repaint_timer.isActive():
+            self._repaint_timer.start()
+
+    def add_filtered_records(self, records) -> None:
+        """Incremental add to filtered buckets when filtered mode is active.
+        No-op if filtered mode is not active."""
+        if self._filtered_buckets is None:
+            return
+        for rec in records:
+            key = rec.timestamp[:17]
+            if key not in self._filtered_buckets:
+                self._filtered_buckets[key] = defaultdict(int)
+                self._filtered_keys.append(key)
+            self._filtered_buckets[key][rec.level] += 1
+            total = sum(self._filtered_buckets[key].values())
+            if total > self._filtered_max:
+                self._filtered_max = total
+        if not self._repaint_timer.isActive():
+            self._repaint_timer.start()
+
     def reset(self, records) -> None:
         """Full rebuild from a record list (used after load/clear)."""
         self._buckets.clear()
         self._keys.clear()
         self._max_count = 1
+        self._filtered_buckets = None
+        self._filtered_keys = None
+        self._filtered_max = None
         self._hover_key = None
         self._sel_key = None
         self._range_from = None
@@ -99,7 +170,7 @@ class TimelineWidget(QWidget):
 
     def set_cursor_key(self, key: str) -> None:
         """Move the single-click cursor marker to the given timestamp key."""
-        if key in self._buckets and key != self._sel_key:
+        if key in self._active_buckets and key != self._sel_key:
             self._sel_key = key
             self.update()
 
@@ -120,34 +191,37 @@ class TimelineWidget(QWidget):
 
     # ------------------------------------------------------------------
     def _key_at(self, x: float, clamp: bool = False) -> Optional[str]:
-        if not self._keys:
+        keys = self._active_keys
+        if not keys:
             return None
-        n = len(self._keys)
+        n = len(keys)
         avail = self.width() - _MARGIN_LEFT - _MARGIN_RIGHT
         bar_w = avail / n
         idx = int((x - _MARGIN_LEFT) / bar_w)
         if clamp:
             idx = max(0, min(n - 1, idx))
-            return self._keys[idx]
+            return keys[idx]
         if 0 <= idx < n:
-            return self._keys[idx]
+            return keys[idx]
         return None
 
     def _range_indices(self) -> Tuple[int, int]:
         """Return (start_idx, end_idx) for the current range, normalised lo <= hi."""
         if not (self._range_from and self._range_to):
             return (-1, -1)
+        keys = self._active_keys
         try:
-            fi = self._keys.index(self._range_from)
-            ti = self._keys.index(self._range_to)
+            fi = keys.index(self._range_from)
+            ti = keys.index(self._range_to)
         except ValueError:
             return (-1, -1)
         return (min(fi, ti), max(fi, ti))
 
     def _emit_range(self) -> None:
         if self._range_from and self._range_to:
+            keys = self._active_keys
             lo, hi = self._range_indices()
-            self.range_selected.emit(self._keys[lo], self._keys[hi])
+            self.range_selected.emit(keys[lo], keys[hi])
 
     # ------------------------------------------------------------------
     def mousePressEvent(self, event) -> None:
@@ -160,13 +234,15 @@ class TimelineWidget(QWidget):
 
     def mouseMoveEvent(self, event) -> None:
         x = event.position().x()
+        buckets = self._active_buckets
+        keys = self._active_keys
 
         # Hover update (only when not dragging)
         key = self._key_at(x)
         if not self._is_dragging and key != self._hover_key:
             self._hover_key = key
-            if key:
-                counts = self._buckets[key]
+            if key and key in buckets:
+                counts = buckets[key]
                 total = sum(counts.values())
                 worst = max(counts, key=lambda l: LEVEL_SEVERITY.get(l, 0))
                 self.setToolTip(f"{key}  ·  {total} messages  ·  worst: {worst}")
@@ -185,8 +261,8 @@ class TimelineWidget(QWidget):
                 if cursor_key and cursor_key != self._drag_cursor:
                     self._drag_cursor = cursor_key
                     # Update committed range to reflect live drag
-                    anchor_i = self._keys.index(self._drag_anchor) if self._drag_anchor in self._keys else 0
-                    cursor_i = self._keys.index(cursor_key)
+                    anchor_i = keys.index(self._drag_anchor) if self._drag_anchor in keys else 0
+                    cursor_i = keys.index(cursor_key)
                     if anchor_i <= cursor_i:
                         self._range_from = self._drag_anchor
                         self._range_to = cursor_key
@@ -230,13 +306,17 @@ class TimelineWidget(QWidget):
 
         painter.fillRect(0, 0, w, h, _BG)
 
-        if not self._keys:
+        keys = self._active_keys
+        buckets = self._active_buckets
+        max_count = self._active_max
+
+        if not keys:
             painter.setPen(QColor("#6272A4"))
             painter.drawText(QRect(0, 0, w, h), Qt.AlignCenter, "No log data")
             painter.end()
             return
 
-        n = len(self._keys)
+        n = len(keys)
         avail = w - _MARGIN_LEFT - _MARGIN_RIGHT
         bar_w = avail / n
 
@@ -244,8 +324,8 @@ class TimelineWidget(QWidget):
         range_lo, range_hi = self._range_indices()
         has_range = range_lo >= 0 and range_hi >= 0
 
-        for i, key in enumerate(self._keys):
-            counts = self._buckets[key]
+        for i, key in enumerate(keys):
+            counts = buckets[key]
             total = sum(counts.values())
             worst = max(counts, key=lambda l: LEVEL_SEVERITY.get(l, 0))
             color = QColor(TIMELINE_BAR_COLORS.get(worst, QColor("#42A5F5")))
@@ -259,7 +339,7 @@ class TimelineWidget(QWidget):
             elif key == self._hover_key:
                 color = color.lighter(115)
 
-            bar_h = max(2, int((total / self._max_count) * (bar_area_h - 6)))
+            bar_h = max(2, int((total / max_count) * (bar_area_h - 6)))
             x = int(_MARGIN_LEFT + i * bar_w)
             bar_px_w = max(1, int(bar_w) - (1 if bar_w >= 3 else 0))
             y = bar_area_h - bar_h
@@ -279,8 +359,8 @@ class TimelineWidget(QWidget):
             painter.drawLine(x2 - 1, 0, x2 - 1, bar_area_h)
 
         # Single-click selection marker
-        if self._sel_key and self._sel_key in self._buckets:
-            i = self._keys.index(self._sel_key)
+        if self._sel_key and self._sel_key in buckets:
+            i = keys.index(self._sel_key)
             cx = int(_MARGIN_LEFT + (i + 0.5) * bar_w)
             painter.setPen(QPen(_SEL_PEN, 1))
             painter.drawLine(cx, 0, cx, bar_area_h)
@@ -298,7 +378,7 @@ class TimelineWidget(QWidget):
         for idx, _ in label_triples:
             if idx >= n:
                 continue
-            label = self._keys[idx][6:]   # "HH:MM:SS"
+            label = keys[idx][6:]   # "HH:MM:SS"
             lx = int(_MARGIN_LEFT + idx * bar_w)
             painter.drawText(
                 QRect(lx - 24, bar_area_h + 1, 48, _AXIS_H - 2),
