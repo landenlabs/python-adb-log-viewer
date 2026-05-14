@@ -950,6 +950,30 @@ class MainWindow(QMainWindow):
         if not path:
             return
         if path.endswith(".db"):
+            if not self._recording:
+                db_count = self._db.count() + len(self._db_buffer)
+                view_count = self._model.rowCount()
+                msg = QMessageBox(self)
+                msg.setWindowTitle("Record is Off")
+                msg.setIcon(QMessageBox.Warning)
+                msg.setText(
+                    f"Record is currently <b>off</b>.<br><br>"
+                    f"The .db file will only contain <b>{db_count:,} recorded row(s)</b>.<br>"
+                    f"The current view has <b>{view_count:,} row(s)</b> total.<br><br>"
+                    f"Save as <b>.txt</b> to export everything you see."
+                )
+                btn_db  = msg.addButton("Save .db anyway", QMessageBox.AcceptRole)
+                btn_txt = msg.addButton("Save as .txt",    QMessageBox.ActionRole)
+                msg.addButton("Cancel",                    QMessageBox.RejectRole)
+                msg.exec()
+                clicked = msg.clickedButton()
+                if clicked is btn_txt:
+                    txt_path = path[:-3] + ".txt"
+                    self._save_as_text(txt_path)
+                    return
+                elif clicked is not btn_db:
+                    return
+            self._flush_db_buffer()
             self._db.save_to_file(path)
         else:
             self._save_as_text(path)
