@@ -264,6 +264,10 @@ class MemDialog(QDialog):
 
     def set_device(self, device: Optional[str]) -> None:
         self._device = device
+        title = "Memory Monitor"
+        if device:
+            title += f" — {device}"
+        self.setWindowTitle(title)
 
     def set_adb_exe(self, exe: str) -> None:
         self._adb_exe = exe
