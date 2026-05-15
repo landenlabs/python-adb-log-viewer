@@ -187,13 +187,18 @@ class MainWindow(QMainWindow):
         self._table.setWordWrap(False)
         self._table.verticalHeader().setVisible(False)
         hh = self._table.horizontalHeader()
-        hh.setStretchLastSection(True)
+        hh.setStretchLastSection(False)
         hh.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         hh.resizeSection(0, 180)  # timestamp
         hh.resizeSection(1, 60)   # pid
         hh.resizeSection(2, 60)   # tid
         hh.resizeSection(3, 40)   # level
         hh.resizeSection(4, 180)  # tag
+        hh.resizeSection(COL_MSG, 2000)  # message — wide enough to trigger horizontal scroll
+        hh.setSectionResizeMode(COL_MSG, QHeaderView.Interactive)
+        self._table.setHorizontalScrollMode(QTableView.ScrollPerPixel)
+        self._table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._table.setAutoScroll(False)
         
         vh = self._table.verticalHeader()
         vh.setDefaultSectionSize(20) # Slightly taller for readability
