@@ -6,7 +6,9 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtGui import QColor
+
+from .log_model import make_mono_font
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -36,7 +38,7 @@ _DELTA_GROW    = QColor("#C62828")  # red    — grew since grab
 _DELTA_SHRINK  = QColor("#2E7D32")  # green  — shrank since grab
 _DELTA_NEUTRAL = QColor("#9E9E9E")  # gray   — unchanged
 
-_MONO = QFont("Courier New", 10)
+_MONO = make_mono_font(10)
 
 _INTERVALS = [("2 s", 2_000), ("5 s", 5_000), ("10 s", 10_000), ("30 s", 30_000)]
 _DEFAULT_IDX = 1   # 5 s

@@ -37,6 +37,25 @@ HIGHLIGHT_ROLE = Qt.UserRole + 3
 # Compiled color rule entry: (pattern, field, fg_or_None, bg_or_None, entire_row)
 _CompiledRule = Tuple[re.Pattern, str, Optional[str], Optional[str], bool]
 
+# Per-platform monospaced fallback stack. Qt picks the first family that is
+# actually installed; ordering favours thicker, more-readable fonts shipped
+# with each OS, with Courier New as the last-resort universal fallback.
+MONO_FAMILIES = [
+    "Cascadia Mono",   # Windows 10/11
+    "Consolas",        # older Windows
+    "Menlo",           # macOS
+    "SF Mono",         # macOS
+    "Courier New",     # universal fallback
+]
+
+
+def make_mono_font(pt: int) -> QFont:
+    f = QFont()
+    f.setFamilies(MONO_FAMILIES)
+    f.setPointSize(pt)
+    f.setStyleStrategy(QFont.PreferAntialias)
+    return f
+
 
 class LogModel(QAbstractTableModel):
     """Holds all log records in memory and exposes them to QTableView."""
@@ -45,9 +64,7 @@ class LogModel(QAbstractTableModel):
         super().__init__(parent)
         self._records: List[LogRecord] = []
         self._merge_enabled: bool = False
-        # Modern monospaced font stack
-        self._font = QFont("JetBrains Mono, Cascadia Code, Consolas, Menlo, monospace", 9)
-        self._font.setStyleStrategy(QFont.PreferAntialias)
+        self._font = make_mono_font(9)
         # Color config — initialised from constants, updated via set_color_config()
         self._level_fg: dict[str, QColor] = dict(LEVEL_FG)
         self._level_bg: dict[str, QColor] = dict(LEVEL_BG)
@@ -156,7 +173,7 @@ class LogModel(QAbstractTableModel):
         return None
 
     def set_font_size(self, pt: int) -> None:
-        self._font = QFont("Courier New", pt)
+        self._font = make_mono_font(pt)
         rows = len(self._records)
         if rows:
             top = self.index(0, 0)

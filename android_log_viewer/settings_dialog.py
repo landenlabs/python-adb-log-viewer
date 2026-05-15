@@ -115,6 +115,12 @@ class SettingsDialog(QDialog):
             "Clearing all filters restores the full timeline."
         )
         layout.addWidget(self._timeline_filter_cb)
+        layout.addSpacing(16)
+        self._compact_rows_cb = QCheckBox("Compact rows")
+        self._compact_rows_cb.setToolTip(
+            "Tighter vertical spacing in the log table for more rows on screen."
+        )
+        layout.addWidget(self._compact_rows_cb)
         layout.addStretch()
         return grp
 
@@ -275,6 +281,7 @@ class SettingsDialog(QDialog):
         self._theme_combo.setCurrentText(self._settings.theme.capitalize())
         self._merge_cb.setChecked(self._settings.merge_same_time_tag)
         self._timeline_filter_cb.setChecked(self._settings.timeline_follows_filter)
+        self._compact_rows_cb.setChecked(self._settings.compact_rows)
 
         # ADB path — block signal so _on_adb_path_changed fires once at the end
         self._adb_path_edit.blockSignals(True)
@@ -300,6 +307,7 @@ class SettingsDialog(QDialog):
         self._settings.theme = self._theme_combo.currentText().lower()
         self._settings.merge_same_time_tag = self._merge_cb.isChecked()
         self._settings.timeline_follows_filter = self._timeline_filter_cb.isChecked()
+        self._settings.compact_rows = self._compact_rows_cb.isChecked()
         self._settings.adb_path = self._adb_path_edit.text().strip()
         chosen = {name for name, cb in self._buffer_cbs.items() if cb.isChecked()}
         self._settings.buffers = chosen if chosen else {"main"}

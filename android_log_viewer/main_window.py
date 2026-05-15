@@ -51,6 +51,9 @@ _ZOOM_SIZES = (6, 7, 8, 9, 10, 11, 12, 14, 16, 18, 20, 24)
 _BASE_ZOOM_IDX = 3
 _BASE_PT = _ZOOM_SIZES[_BASE_ZOOM_IDX]   # 9
 
+# Style for toolbar buttons whose companion dialog is currently open.
+_DIALOG_OPEN_STYLE = "color: #FFFFFF; background-color: #1565C0; font-weight: bold;"
+
 
 def _fmt_bytes(n: int) -> str:
     if n < 1024:
@@ -93,7 +96,7 @@ class MainWindow(QMainWindow):
         self._range_filter_active: bool = False
 
         self._zoom_idx: int = _BASE_ZOOM_IDX   # current index into _ZOOM_SIZES
-        self._recording: bool = True            # whether incoming rows go to the DB
+        self._recording: bool = False           # whether incoming rows go to the DB
 
         # Throttle stats-dialog auto-refresh to at most once per 2 s
         self._stats_refresh_timer = QTimer(self)
@@ -110,6 +113,10 @@ class MainWindow(QMainWindow):
         self._bg_pixmaps: dict[str, Optional[QPixmap]] = {}
         self._load_bg_pixmaps()
 
+        # Maps a tracked dialog -> the toolbar button whose style reflects
+        # that dialog's open/closed state. Populated lazily by _track_dialog.
+        self._tracked_dialogs: dict[object, QPushButton] = {}
+
         self._build_ui()
         self._wire_signals()
         self._refresh_devices()
@@ -121,6 +128,12 @@ class MainWindow(QMainWindow):
         self._update_settings_button_label()
         self._apply_color_config()
         apply_theme(self._settings.theme)
+        # Row height must be re-applied after apply_theme — the theme's
+        # QHeaderView::section padding can otherwise override the value set
+        # in _build_ui, leaving Compact rows ignored until next toggle.
+        self._table.verticalHeader().setDefaultSectionSize(
+            16 if self._settings.compact_rows else 20
+        )
 
         if initial_tag or initial_text:
             self._apply_initial_filters(initial_tag, initial_text)
@@ -139,21 +152,53 @@ class MainWindow(QMainWindow):
         if self._proxy.rowCount() > 0:
             self._empty_overlay.hide()
             return
+        viewport = self._table.viewport()
+        vp_size = viewport.size()
         img_name = "bg-dark.jpg" if self._settings.theme == "dark" else "bg-light.jpg"
         px = self._bg_pixmaps.get(img_name)
-        if px and not px.isNull():
-            scaled = px.scaled(self._table.size(), Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+        if px and not px.isNull() and vp_size.width() > 0 and vp_size.height() > 0:
+            scaled = px.scaled(vp_size, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
             self._empty_overlay.setPixmap(scaled)
-        self._empty_overlay.setGeometry(self._table.rect())
+        self._empty_overlay.setGeometry(viewport.rect())
         self._empty_overlay.show()
         self._empty_overlay.raise_()
+        self._empty_overlay.update()
 
     def eventFilter(self, obj: object, event: QEvent) -> bool:
-        if obj is self._table and event.type() == QEvent.Type.Resize:
-            if self._empty_overlay.isVisible():
-                self._empty_overlay.setGeometry(self._table.rect())
-                self._update_empty_overlay()
+        if obj is self._table.viewport() and event.type() == QEvent.Type.Resize:
+            # Always recompute — gating on isVisible() can skip the very first
+            # resize that fires before the visibility chain is fully established.
+            self._update_empty_overlay()
+        elif obj in self._tracked_dialogs and event.type() in (
+            QEvent.Type.Show, QEvent.Type.Hide,
+        ):
+            self._refresh_dialog_button(obj)
         return super().eventFilter(obj, event)
+
+    # ============================================================ dialog buttons
+    def _track_dialog(self, dialog: object, button: "QPushButton") -> None:
+        """Tie a dialog's visibility to a toolbar button's highlight style."""
+        self._tracked_dialogs[dialog] = button
+        dialog.installEventFilter(self)
+
+    def _toggle_dialog(self, dialog) -> None:
+        """Open if closed, close if open."""
+        if dialog.isVisible():
+            dialog.hide()
+            return
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _refresh_dialog_button(self, dialog: object) -> None:
+        btn = self._tracked_dialogs.get(dialog)
+        if btn is None:
+            return
+        # Stats has a layered state (open + active filters); delegate to it.
+        if btn is self._btn_stats:
+            self._update_stats_button_label()
+            return
+        btn.setStyleSheet(_DIALOG_OPEN_STYLE if dialog.isVisible() else "")
 
     # ================================================================== build
     def _build_ui(self) -> None:
@@ -201,7 +246,11 @@ class MainWindow(QMainWindow):
         self._table.setAutoScroll(False)
         
         vh = self._table.verticalHeader()
-        vh.setDefaultSectionSize(20) # Slightly taller for readability
+        # Allow rows as small as 14px — the theme's QHeaderView::section
+        # padding otherwise gives Qt a min section height around 20 and
+        # silently clips setDefaultSectionSize(16) for compact rows.
+        vh.setMinimumSectionSize(14)
+        vh.setDefaultSectionSize(16 if self._settings.compact_rows else 20)
         vh.setSectionResizeMode(QHeaderView.Fixed)
         
         self._table.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -209,11 +258,13 @@ class MainWindow(QMainWindow):
         self._table.setItemDelegateForColumn(COL_TAG, self._highlight_delegate)
         self._table.setItemDelegateForColumn(COL_MSG, self._highlight_delegate)
 
-        self._empty_overlay = QLabel(self._table)
+        # Parent to viewport(), not the QTableView frame — otherwise the
+        # viewport (and its stylesheet background) paints over the overlay.
+        self._empty_overlay = QLabel(self._table.viewport())
         self._empty_overlay.setAlignment(Qt.AlignCenter)
         self._empty_overlay.setAttribute(Qt.WA_TransparentForMouseEvents)
         self._empty_overlay.hide()
-        self._table.installEventFilter(self)
+        self._table.viewport().installEventFilter(self)
 
         splitter.addWidget(self._table)
 
@@ -301,12 +352,12 @@ class MainWindow(QMainWindow):
 
         tb.addSeparator()
 
-        self._btn_record = QPushButton("● REC")
+        self._btn_record = QPushButton("○ REC")
         self._btn_record.setCheckable(True)
-        self._btn_record.setChecked(True)
+        self._btn_record.setChecked(False)
         self._btn_record.setFixedWidth(75)
         self._btn_record.setToolTip("Toggle recording to database")
-        self._btn_record.setStyleSheet("color: #ff5555; font-weight: bold;")
+        self._btn_record.setStyleSheet("color: #757575;")
         tb.addWidget(self._btn_record)
 
         self._btn_clear = QPushButton("Clear")
@@ -1091,6 +1142,9 @@ class MainWindow(QMainWindow):
         apply_theme(self._settings.theme)
         self._proxy.set_exclude_rules(self._settings.exclude_rules)
         self._model.set_merge_enabled(self._settings.merge_same_time_tag)
+        self._table.verticalHeader().setDefaultSectionSize(
+            16 if self._settings.compact_rows else 20
+        )
         self._settings.save()
         self._update_settings_button_label()
         self._update_status()
@@ -1118,16 +1172,15 @@ class MainWindow(QMainWindow):
         if self._stats_dialog is None:
             self._stats_dialog = StatsDialog(parent=self)
             self._stats_dialog.filter_applied.connect(self._on_stats_filter_applied)
-
-        device_text = self._device_combo.currentText()
-        self._stats_dialog.set_device(
-            device_text if not device_text.startswith("(") else None
-        )
-        self._stats_dialog.set_adb_exe(self._adb_exe())
-        self._stats_dialog.refresh(self._stats)
-        self._stats_dialog.show()
-        self._stats_dialog.raise_()
-        self._stats_dialog.activateWindow()
+            self._track_dialog(self._stats_dialog, self._btn_stats)
+        if not self._stats_dialog.isVisible():
+            device_text = self._device_combo.currentText()
+            self._stats_dialog.set_device(
+                device_text if not device_text.startswith("(") else None
+            )
+            self._stats_dialog.set_adb_exe(self._adb_exe())
+            self._stats_dialog.refresh(self._stats)
+        self._toggle_dialog(self._stats_dialog)
 
     def _refresh_stats_dialog_if_visible(self) -> None:
         if self._stats_dialog and self._stats_dialog.isVisible():
@@ -1141,30 +1194,35 @@ class MainWindow(QMainWindow):
         self._rebuild_timeline_filter()
 
     def _update_stats_button_label(self) -> None:
-        if self._stats_dialog:
-            pids = self._stats_dialog.active_pids
-            tags = self._stats_dialog.active_tags
-            if pids or tags:
-                parts = []
-                if pids:
-                    parts.append(f"{len(pids)}P")
-                if tags:
-                    parts.append(f"{len(tags)}T")
-                self._btn_stats.setText(f"Stats [{'+'.join(parts)}]")
-                self._btn_stats.setStyleSheet("font-weight: bold; color: #E65100;")
-                return
-        self._btn_stats.setText("Stats")
-        self._btn_stats.setStyleSheet("")
+        pids = self._stats_dialog.active_pids if self._stats_dialog else set()
+        tags = self._stats_dialog.active_tags if self._stats_dialog else set()
+        if pids or tags:
+            parts = []
+            if pids:
+                parts.append(f"{len(pids)}P")
+            if tags:
+                parts.append(f"{len(tags)}T")
+            self._btn_stats.setText(f"Stats [{'+'.join(parts)}]")
+        else:
+            self._btn_stats.setText("Stats")
+        # Open state wins over the filter-active orange — the bg color is the
+        # clearer signal that "this is what the dialog refers to."
+        if self._stats_dialog is not None and self._stats_dialog.isVisible():
+            self._btn_stats.setStyleSheet(_DIALOG_OPEN_STYLE)
+        elif pids or tags:
+            self._btn_stats.setStyleSheet("font-weight: bold; color: #E65100;")
+        else:
+            self._btn_stats.setStyleSheet("")
 
     # ================================================================== colors dialog
     def _show_colors_dialog(self) -> None:
         if self._colors_dialog is None:
             self._colors_dialog = ColorsDialog(self._settings, parent=self)
             self._colors_dialog.colors_applied.connect(self._apply_color_config)
-        self._colors_dialog._load()
-        self._colors_dialog.show()
-        self._colors_dialog.raise_()
-        self._colors_dialog.activateWindow()
+            self._track_dialog(self._colors_dialog, self._btn_colors)
+        if not self._colors_dialog.isVisible():
+            self._colors_dialog._load()
+        self._toggle_dialog(self._colors_dialog)
 
     def _apply_color_config(self) -> None:
         self._model.set_color_config(
@@ -1181,24 +1239,24 @@ class MainWindow(QMainWindow):
     def _show_mem_dialog(self) -> None:
         if self._mem_dialog is None:
             self._mem_dialog = MemDialog(parent=self)
-        device_text = self._device_combo.currentText()
-        self._mem_dialog.set_device(
-            device_text if not device_text.startswith("(") else None
-        )
-        self._mem_dialog.set_adb_exe(self._adb_exe())
-        self._mem_dialog.show()
-        self._mem_dialog.raise_()
-        self._mem_dialog.activateWindow()
+            self._track_dialog(self._mem_dialog, self._btn_memory)
+        if not self._mem_dialog.isVisible():
+            device_text = self._device_combo.currentText()
+            self._mem_dialog.set_device(
+                device_text if not device_text.startswith("(") else None
+            )
+            self._mem_dialog.set_adb_exe(self._adb_exe())
+        self._toggle_dialog(self._mem_dialog)
 
     # ================================================================== bookmarks
     def _show_bookmarks_dialog(self) -> None:
         if self._bookmarks_dialog is None:
             self._bookmarks_dialog = BookmarksDialog(self._model, self._proxy, parent=self)
             self._bookmarks_dialog.jump_to_row_id.connect(self._jump_to_row_id)
-        self._bookmarks_dialog.refresh()
-        self._bookmarks_dialog.show()
-        self._bookmarks_dialog.raise_()
-        self._bookmarks_dialog.activateWindow()
+            self._track_dialog(self._bookmarks_dialog, self._btn_bookmarks)
+        if not self._bookmarks_dialog.isVisible():
+            self._bookmarks_dialog.refresh()
+        self._toggle_dialog(self._bookmarks_dialog)
 
     def _refresh_bookmarks_dialog_if_visible(self) -> None:
         if self._bookmarks_dialog is not None and self._bookmarks_dialog.isVisible():
@@ -1255,28 +1313,40 @@ class MainWindow(QMainWindow):
     def _show_filter_view(self) -> None:
         if self._filter_view is None:
             self._filter_view = FilterViewDialog(self._model, self._settings, parent=self)
-        device_text = self._device_combo.currentText()
-        self._filter_view.set_device(
-            device_text if not device_text.startswith("(") else None
-        )
-        self._filter_view.show()
-        self._filter_view.raise_()
-        self._filter_view.activateWindow()
+            self._track_dialog(self._filter_view, self._btn_filter_view)
+        if not self._filter_view.isVisible():
+            device_text = self._device_combo.currentText()
+            self._filter_view.set_device(
+                device_text if not device_text.startswith("(") else None
+            )
+        self._toggle_dialog(self._filter_view)
 
     # ================================================================== network dialog
     def _show_net_dialog(self) -> None:
         if self._net_dialog is None:
             self._net_dialog = NetDialog(parent=self)
-        device_text = self._device_combo.currentText()
-        self._net_dialog.set_device(
-            device_text if not device_text.startswith("(") else None
-        )
-        self._net_dialog.set_adb_exe(self._adb_exe())
-        self._net_dialog.show()
-        self._net_dialog.raise_()
-        self._net_dialog.activateWindow()
+            self._track_dialog(self._net_dialog, self._btn_network)
+        if not self._net_dialog.isVisible():
+            device_text = self._device_combo.currentText()
+            self._net_dialog.set_device(
+                device_text if not device_text.startswith("(") else None
+            )
+            self._net_dialog.set_adb_exe(self._adb_exe())
+        self._toggle_dialog(self._net_dialog)
 
     # ================================================================== lifecycle
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        # Once the window is shown the table/viewport finally has its real
+        # size, so the empty overlay's pixmap can be scaled to fit.
+        self._update_empty_overlay()
+        # Re-apply compact-rows: at init time Qt's style engine hasn't
+        # fully computed section minimums, and the height set in __init__
+        # can be silently clipped. Re-applying here makes it stick.
+        self._table.verticalHeader().setDefaultSectionSize(
+            16 if self._settings.compact_rows else 20
+        )
+
     def closeEvent(self, event) -> None:
         # Stop any running background threads before Qt tears down the widget tree.
         # QThread::~QThread() aborts if the thread is still running.
