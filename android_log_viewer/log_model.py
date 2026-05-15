@@ -52,6 +52,8 @@ class LogModel(QAbstractTableModel):
         self._level_fg: dict[str, QColor] = dict(LEVEL_FG)
         self._level_bg: dict[str, QColor] = dict(LEVEL_BG)
         self._color_rules: List[_CompiledRule] = []
+        # Bookmarks keyed by row_id (stable across filter changes)
+        self._bookmarks: Set[int] = set()
 
     # ------------------------------------------------------------------ Qt API
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
@@ -74,7 +76,10 @@ class LogModel(QAbstractTableModel):
         rec = self._records[row]
 
         if role == Qt.DisplayRole:
-            if col == COL_TIME:    return rec.timestamp
+            if col == COL_TIME:
+                if rec.row_id in self._bookmarks and not rec.is_sub_row:
+                    return "★ " + rec.timestamp
+                return rec.timestamp
             if col == COL_PID:     return rec.pid
             if col == COL_TID:     return rec.tid
             if col == COL_LEVEL:   return rec.level
@@ -318,6 +323,10 @@ class LogModel(QAbstractTableModel):
         # Don't orphan sub-rows that immediately follow the last pruned record
         while actual < len(self._records) and self._records[actual].is_sub_row:
             actual += 1
+        # Drop bookmarks that point at rows being pruned
+        if self._bookmarks:
+            pruned_ids = {r.row_id for r in self._records[:actual]}
+            self._bookmarks -= pruned_ids
         self.beginRemoveRows(QModelIndex(), 0, actual - 1)
         del self._records[:actual]
         self.endRemoveRows()
@@ -325,6 +334,7 @@ class LogModel(QAbstractTableModel):
     def clear(self) -> None:
         self.beginResetModel()
         self._records.clear()
+        self._bookmarks.clear()
         self.endResetModel()
 
     # ------------------------------------------------------------------ read
@@ -335,6 +345,76 @@ class LogModel(QAbstractTableModel):
 
     def all_records(self) -> List[LogRecord]:
         return self._records
+
+    def find_row_for_row_id(self, row_id: int) -> int:
+        """Return the source-model row index of the head record with this row_id,
+        or -1 if not present. row_ids are monotonically non-decreasing in _records
+        (sub-rows share their parent's row_id), so binary search works."""
+        if not self._records:
+            return -1
+        lo, hi = 0, len(self._records) - 1
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            rec = self._records[mid]
+            if rec.row_id == row_id:
+                while mid > 0 and self._records[mid].is_sub_row:
+                    mid -= 1
+                if self._records[mid].row_id == row_id and not self._records[mid].is_sub_row:
+                    return mid
+                return -1
+            if rec.row_id < row_id:
+                lo = mid + 1
+            else:
+                hi = mid - 1
+        return -1
+
+    # ------------------------------------------------------------------ bookmarks
+    def is_bookmarked(self, row_id: int) -> bool:
+        return row_id in self._bookmarks
+
+    def toggle_bookmark(self, row_id: int) -> bool:
+        """Add or remove the bookmark. Returns the new state (True = bookmarked)."""
+        if row_id in self._bookmarks:
+            self._bookmarks.discard(row_id)
+            state = False
+        else:
+            self._bookmarks.add(row_id)
+            state = True
+        self._refresh_time_cell_for_row_id(row_id)
+        return state
+
+    def add_bookmark(self, row_id: int) -> None:
+        if row_id not in self._bookmarks:
+            self._bookmarks.add(row_id)
+            self._refresh_time_cell_for_row_id(row_id)
+
+    def remove_bookmark(self, row_id: int) -> None:
+        if row_id in self._bookmarks:
+            self._bookmarks.discard(row_id)
+            self._refresh_time_cell_for_row_id(row_id)
+
+    def clear_bookmarks(self) -> None:
+        if not self._bookmarks:
+            return
+        self._bookmarks.clear()
+        # Repaint all time cells — cheap enough vs. tracking each row.
+        if self._records:
+            top = self.index(0, COL_TIME)
+            bot = self.index(len(self._records) - 1, COL_TIME)
+            self.dataChanged.emit(top, bot, [Qt.DisplayRole])
+
+    def bookmarked_records(self) -> List[LogRecord]:
+        """Return head records (not sub-rows) whose row_id is bookmarked, in row order."""
+        return [
+            r for r in self._records
+            if not r.is_sub_row and r.row_id in self._bookmarks
+        ]
+
+    def _refresh_time_cell_for_row_id(self, row_id: int) -> None:
+        row = self.find_row_for_row_id(row_id)
+        if row >= 0:
+            idx = self.index(row, COL_TIME)
+            self.dataChanged.emit(idx, idx, [Qt.DisplayRole])
 
     def find_row_for_timestamp(self, ts: str) -> int:
         """Binary search: first row whose timestamp >= ts."""

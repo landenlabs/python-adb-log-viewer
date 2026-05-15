@@ -37,6 +37,7 @@ from .filter_view_dialog import FilterViewDialog
 from .log_model import COL_MSG, COL_TAG, HighlightDelegate, LogFilterProxy, LogModel
 from .log_record import LogRecord
 from .about_dialog import AboutDialog
+from .bookmarks_dialog import BookmarksDialog
 from .mem_dialog import MemDialog
 from .net_dialog import NetDialog
 from .settings_dialog import SettingsDialog
@@ -87,6 +88,7 @@ class MainWindow(QMainWindow):
         self._net_dialog: Optional[NetDialog] = None
         self._colors_dialog: Optional[ColorsDialog] = None
         self._filter_view: Optional[FilterViewDialog] = None
+        self._bookmarks_dialog: Optional[BookmarksDialog] = None
         self._selected_range: Optional[tuple] = None   # (from_key, to_key) or None
         self._range_filter_active: bool = False
 
@@ -336,6 +338,12 @@ class MainWindow(QMainWindow):
         self._btn_filter_view.setToolTip("Open a second filtered log view")
         tb.addWidget(self._btn_filter_view)
 
+        self._btn_bookmarks = QPushButton("Bookmarks")
+        self._btn_bookmarks.setToolTip(
+            "Manage bookmarks (Ctrl+B to toggle bookmark on current row)"
+        )
+        tb.addWidget(self._btn_bookmarks)
+
         self._btn_colors = QPushButton("Colors")
         tb.addWidget(self._btn_colors)
 
@@ -451,6 +459,7 @@ class MainWindow(QMainWindow):
         self._btn_memory.clicked.connect(self._show_mem_dialog)
         self._btn_network.clicked.connect(self._show_net_dialog)
         self._btn_filter_view.clicked.connect(self._show_filter_view)
+        self._btn_bookmarks.clicked.connect(self._show_bookmarks_dialog)
         self._btn_settings.clicked.connect(self._show_settings_dialog)
         self._btn_colors.clicked.connect(self._show_colors_dialog)
         self._btn_about.clicked.connect(self._show_about_dialog)
@@ -484,6 +493,11 @@ class MainWindow(QMainWindow):
         copy_rows_action.setShortcut(QKeySequence("Ctrl+C"))
         copy_rows_action.triggered.connect(self._copy_selected_rows)
         self._table.addAction(copy_rows_action)
+
+        bookmark_action = QAction("Toggle bookmark", self)
+        bookmark_action.setShortcut(QKeySequence("Ctrl+B"))
+        bookmark_action.triggered.connect(self._toggle_bookmark_current_row)
+        self.addAction(bookmark_action)
 
         # Zoom shortcuts  (Ctrl++  Ctrl+=  Ctrl−  Ctrl+0)
         for keys, slot in [
@@ -838,6 +852,17 @@ class MainWindow(QMainWindow):
             )
         menu.addAction("Copy message", lambda: QApplication.clipboard().setText(rec.message))
         menu.addSeparator()
+        if self._model.is_bookmarked(rec.row_id):
+            menu.addAction(
+                "Remove bookmark\tCtrl+B",
+                lambda rid=rec.row_id: self._toggle_bookmark_for_row_id(rid),
+            )
+        else:
+            menu.addAction(
+                "Add bookmark\tCtrl+B",
+                lambda rid=rec.row_id: self._toggle_bookmark_for_row_id(rid),
+            )
+        menu.addSeparator()
         menu.addAction(
             f"Filter by tag: {rec.tag}",
             lambda t=rec.tag: self._tag_edit.setText(re_escape_tag(t)),
@@ -898,6 +923,8 @@ class MainWindow(QMainWindow):
     def _clear_logs(self) -> None:
         # 1. Wipe in-app state
         self._db_buffer.clear()
+        self._model.clear_bookmarks()
+        self._refresh_bookmarks_dialog_if_visible()
         self._model.clear()
         self._db.clear()
         self._next_row_id = 1
@@ -1006,6 +1033,8 @@ class MainWindow(QMainWindow):
                 records = _load_text_file(path)
 
             self._db_buffer.clear()           # drop unflushed rows before replacing DB
+            self._model.clear_bookmarks()
+            self._refresh_bookmarks_dialog_if_visible()
             self._model.clear()
             self._db.clear()
             self._next_row_id = 1
@@ -1155,6 +1184,56 @@ class MainWindow(QMainWindow):
         self._mem_dialog.show()
         self._mem_dialog.raise_()
         self._mem_dialog.activateWindow()
+
+    # ================================================================== bookmarks
+    def _show_bookmarks_dialog(self) -> None:
+        if self._bookmarks_dialog is None:
+            self._bookmarks_dialog = BookmarksDialog(self._model, self._proxy, parent=self)
+            self._bookmarks_dialog.jump_to_row_id.connect(self._jump_to_row_id)
+        self._bookmarks_dialog.refresh()
+        self._bookmarks_dialog.show()
+        self._bookmarks_dialog.raise_()
+        self._bookmarks_dialog.activateWindow()
+
+    def _refresh_bookmarks_dialog_if_visible(self) -> None:
+        if self._bookmarks_dialog is not None and self._bookmarks_dialog.isVisible():
+            self._bookmarks_dialog.refresh()
+
+    def _toggle_bookmark_current_row(self) -> None:
+        idx = self._table.currentIndex()
+        if not idx.isValid():
+            return
+        rec: Optional[LogRecord] = self._proxy.data(
+            self._proxy.index(idx.row(), 0), Qt.UserRole
+        )
+        if rec is None:
+            return
+        self._toggle_bookmark_for_row_id(rec.row_id)
+
+    def _toggle_bookmark_for_row_id(self, row_id: int) -> None:
+        state = self._model.toggle_bookmark(row_id)
+        self._refresh_bookmarks_dialog_if_visible()
+        self.statusBar().showMessage(
+            "Bookmark added." if state else "Bookmark removed.", 2000
+        )
+
+    def _jump_to_row_id(self, row_id: int) -> None:
+        src_row = self._model.find_row_for_row_id(row_id)
+        if src_row < 0:
+            self.statusBar().showMessage("Bookmarked row is no longer in the log.", 3000)
+            return
+        proxy_idx = self._proxy.mapFromSource(self._model.index(src_row, 0))
+        if not proxy_idx.isValid():
+            self.statusBar().showMessage(
+                "Bookmarked row is hidden by the current filter.", 3000
+            )
+            return
+        # Disable autoscroll so the user stays at the jumped-to position.
+        if self._auto_scroll:
+            self._chk_autoscroll.setChecked(False)   # toggled signal updates _auto_scroll
+        self._table.scrollTo(proxy_idx, QTableView.PositionAtCenter)
+        self._table.selectRow(proxy_idx.row())
+        self._table.setFocus()
 
     # ================================================================== filter view dialog
     def _show_filter_view(self) -> None:
