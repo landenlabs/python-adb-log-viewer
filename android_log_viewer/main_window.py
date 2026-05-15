@@ -40,6 +40,7 @@ from .about_dialog import AboutDialog
 from .bookmarks_dialog import BookmarksDialog
 from .mem_dialog import MemDialog
 from .net_dialog import NetDialog
+from .packages_dialog import PackagesDialog
 from .settings_dialog import SettingsDialog
 from .stats import StatsTracker
 from .themes import apply_theme
@@ -89,6 +90,7 @@ class MainWindow(QMainWindow):
         self._settings_dialog: Optional[SettingsDialog] = None
         self._mem_dialog: Optional[MemDialog] = None
         self._net_dialog: Optional[NetDialog] = None
+        self._packages_dialog: Optional[PackagesDialog] = None
         self._colors_dialog: Optional[ColorsDialog] = None
         self._filter_view: Optional[FilterViewDialog] = None
         self._bookmarks_dialog: Optional[BookmarksDialog] = None
@@ -321,6 +323,11 @@ class MainWindow(QMainWindow):
         self._lbl_time_range.setToolTip("Selected time range on the timeline")
         sb.addWidget(self._lbl_time_range)
 
+        self._chk_autoscroll = QCheckBox("Scroll")
+        self._chk_autoscroll.setChecked(True)
+        self._chk_autoscroll.setToolTip("Auto-scroll to latest")
+        sb.addPermanentWidget(self._chk_autoscroll)
+
         sb.addPermanentWidget(self._lbl_conn)
         sb.addPermanentWidget(self._lbl_total)
         sb.addPermanentWidget(self._lbl_shown)
@@ -374,13 +381,6 @@ class MainWindow(QMainWindow):
 
         tb.addSeparator()
 
-        self._chk_autoscroll = QCheckBox("Scroll")
-        self._chk_autoscroll.setChecked(True)
-        self._chk_autoscroll.setToolTip("Auto-scroll to latest")
-        tb.addWidget(self._chk_autoscroll)
-
-        tb.addSeparator()
-
         self._btn_stats = QPushButton("Stats")
         tb.addWidget(self._btn_stats)
 
@@ -389,6 +389,10 @@ class MainWindow(QMainWindow):
 
         self._btn_network = QPushButton("Net")
         tb.addWidget(self._btn_network)
+
+        self._btn_packages = QPushButton("Pkgs")
+        self._btn_packages.setToolTip("List installed 3rd-party packages")
+        tb.addWidget(self._btn_packages)
 
         self._btn_filter_view = QPushButton("View")
         self._btn_filter_view.setToolTip("Open a second filtered log view")
@@ -514,6 +518,7 @@ class MainWindow(QMainWindow):
         self._btn_stats.clicked.connect(self._show_stats_dialog)
         self._btn_memory.clicked.connect(self._show_mem_dialog)
         self._btn_network.clicked.connect(self._show_net_dialog)
+        self._btn_packages.clicked.connect(self._show_packages_dialog)
         self._btn_filter_view.clicked.connect(self._show_filter_view)
         self._btn_bookmarks.clicked.connect(self._show_bookmarks_dialog)
         self._btn_settings.clicked.connect(self._show_settings_dialog)
@@ -1161,7 +1166,7 @@ class MainWindow(QMainWindow):
     def _update_settings_button_label(self) -> None:
         active = sum(1 for r in self._settings.exclude_rules if r.enabled and r.pattern)
         if active:
-            self._btn_settings.setText(f"Settings  [{active} rule{'s' if active != 1 else ''}]")
+            self._btn_settings.setText(f"Settings [{active}]")
             self._btn_settings.setStyleSheet("color: #E65100;")
         else:
             self._btn_settings.setText("Settings")
@@ -1334,6 +1339,19 @@ class MainWindow(QMainWindow):
             self._net_dialog.set_adb_exe(self._adb_exe())
         self._toggle_dialog(self._net_dialog)
 
+    # ================================================================== packages dialog
+    def _show_packages_dialog(self) -> None:
+        if self._packages_dialog is None:
+            self._packages_dialog = PackagesDialog(parent=self)
+            self._track_dialog(self._packages_dialog, self._btn_packages)
+        if not self._packages_dialog.isVisible():
+            device_text = self._device_combo.currentText()
+            self._packages_dialog.set_device(
+                device_text if not device_text.startswith("(") else None
+            )
+            self._packages_dialog.set_adb_exe(self._adb_exe())
+        self._toggle_dialog(self._packages_dialog)
+
     # ================================================================== lifecycle
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -1354,6 +1372,8 @@ class MainWindow(QMainWindow):
             self._mem_dialog.shutdown()
         if self._net_dialog is not None:
             self._net_dialog.shutdown()
+        if self._packages_dialog is not None:
+            self._packages_dialog.shutdown()
         if self._stats_dialog is not None:
             self._stats_dialog.shutdown()
         self._stop_capture()
