@@ -197,8 +197,15 @@ class MainWindow(QMainWindow):
         if btn is None:
             return
         # Stats has a layered state (open + active filters); delegate to it.
-        if btn is self._btn_stats:
+        if btn is self._act_stats:
             self._update_stats_button_label()
+            return
+        # Menu actions don't support stylesheets — bold-italic font marks "open."
+        if isinstance(btn, QAction):
+            font = btn.font()
+            font.setBold(dialog.isVisible())
+            font.setItalic(dialog.isVisible())
+            btn.setFont(font)
             return
         btn.setStyleSheet(_DIALOG_OPEN_STYLE if dialog.isVisible() else "")
 
@@ -211,7 +218,9 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(0, 0, 0, 0)
 
         self._build_toolbar()
-        
+        self._build_menu_bar()
+
+
         # Filter bar gets a slightly different background in CSS usually, 
         # but let's ensure it has some padding here.
         filter_container = QWidget()
@@ -373,26 +382,16 @@ class MainWindow(QMainWindow):
 
         tb.addSeparator()
 
-        self._btn_save = QPushButton("Save")
-        tb.addWidget(self._btn_save)
-
-        self._btn_open = QPushButton("Open")
-        tb.addWidget(self._btn_open)
-
-        tb.addSeparator()
-
-        self._btn_stats = QPushButton("Stats")
-        tb.addWidget(self._btn_stats)
-
-        self._btn_memory = QPushButton("Mem")
-        tb.addWidget(self._btn_memory)
-
-        self._btn_network = QPushButton("Net")
-        tb.addWidget(self._btn_network)
-
-        self._btn_packages = QPushButton("Pkgs")
-        self._btn_packages.setToolTip("List installed 3rd-party packages")
-        tb.addWidget(self._btn_packages)
+        # File / Tools menu actions — created here, placed on the menu bar by
+        # _build_menu_bar(). Stats / Save still respond to setText() so their
+        # dynamic-label code keeps working.
+        self._act_save = QAction("Save…", self)
+        self._act_open = QAction("Open…", self)
+        self._act_stats = QAction("Stats", self)
+        self._act_memory = QAction("Mem", self)
+        self._act_network = QAction("Net", self)
+        self._act_packages = QAction("Pkgs", self)
+        self._act_packages.setToolTip("List installed 3rd-party packages")
 
         self._btn_filter_view = QPushButton("View")
         self._btn_filter_view.setToolTip("Open a second filtered log view")
@@ -421,6 +420,18 @@ class MainWindow(QMainWindow):
 
         # keyboard shortcuts
         QAction(self).setShortcut(QKeySequence.Save)
+
+    def _build_menu_bar(self) -> None:
+        mb = self.menuBar()
+        file_menu = mb.addMenu("&File")
+        file_menu.addAction(self._act_open)
+        file_menu.addAction(self._act_save)
+
+        tools_menu = mb.addMenu("&Tools")
+        tools_menu.addAction(self._act_stats)
+        tools_menu.addAction(self._act_memory)
+        tools_menu.addAction(self._act_network)
+        tools_menu.addAction(self._act_packages)
 
     def _build_filter_bar(self) -> QWidget:
         frame = QFrame()
@@ -487,8 +498,8 @@ class MainWindow(QMainWindow):
         self._btn_refresh.clicked.connect(self._refresh_devices)
         self._btn_connect.toggled.connect(self._on_connect_toggled)
         self._btn_clear.clicked.connect(self._clear_logs)
-        self._btn_save.clicked.connect(self._save_logs)
-        self._btn_open.clicked.connect(self._open_logs)
+        self._act_save.triggered.connect(self._save_logs)
+        self._act_open.triggered.connect(self._open_logs)
         self._btn_clear_filters.clicked.connect(self._clear_filters)
         self._chk_autoscroll.toggled.connect(self._on_autoscroll_toggled)
 
@@ -515,10 +526,10 @@ class MainWindow(QMainWindow):
         self._btn_show_range.clicked.connect(self._on_show_range)
         self._btn_clear_range.clicked.connect(self._on_clear_range)
 
-        self._btn_stats.clicked.connect(self._show_stats_dialog)
-        self._btn_memory.clicked.connect(self._show_mem_dialog)
-        self._btn_network.clicked.connect(self._show_net_dialog)
-        self._btn_packages.clicked.connect(self._show_packages_dialog)
+        self._act_stats.triggered.connect(self._show_stats_dialog)
+        self._act_memory.triggered.connect(self._show_mem_dialog)
+        self._act_network.triggered.connect(self._show_net_dialog)
+        self._act_packages.triggered.connect(self._show_packages_dialog)
         self._btn_filter_view.clicked.connect(self._show_filter_view)
         self._btn_bookmarks.clicked.connect(self._show_bookmarks_dialog)
         self._btn_settings.clicked.connect(self._show_settings_dialog)
@@ -1177,7 +1188,7 @@ class MainWindow(QMainWindow):
         if self._stats_dialog is None:
             self._stats_dialog = StatsDialog(parent=self)
             self._stats_dialog.filter_applied.connect(self._on_stats_filter_applied)
-            self._track_dialog(self._stats_dialog, self._btn_stats)
+            self._track_dialog(self._stats_dialog, self._act_stats)
         if not self._stats_dialog.isVisible():
             device_text = self._device_combo.currentText()
             self._stats_dialog.set_device(
@@ -1207,17 +1218,15 @@ class MainWindow(QMainWindow):
                 parts.append(f"{len(pids)}P")
             if tags:
                 parts.append(f"{len(tags)}T")
-            self._btn_stats.setText(f"Stats [{'+'.join(parts)}]")
+            self._act_stats.setText(f"Stats [{'+'.join(parts)}]")
         else:
-            self._btn_stats.setText("Stats")
-        # Open state wins over the filter-active orange — the bg color is the
-        # clearer signal that "this is what the dialog refers to."
-        if self._stats_dialog is not None and self._stats_dialog.isVisible():
-            self._btn_stats.setStyleSheet(_DIALOG_OPEN_STYLE)
-        elif pids or tags:
-            self._btn_stats.setStyleSheet("font-weight: bold; color: #E65100;")
-        else:
-            self._btn_stats.setStyleSheet("")
+            self._act_stats.setText("Stats")
+        # QAction in a menu — express "open" / "filter-active" via font weight.
+        font = self._act_stats.font()
+        is_open = self._stats_dialog is not None and self._stats_dialog.isVisible()
+        font.setBold(bool(is_open or pids or tags))
+        font.setItalic(bool(is_open))
+        self._act_stats.setFont(font)
 
     # ================================================================== colors dialog
     def _show_colors_dialog(self) -> None:
@@ -1244,7 +1253,7 @@ class MainWindow(QMainWindow):
     def _show_mem_dialog(self) -> None:
         if self._mem_dialog is None:
             self._mem_dialog = MemDialog(parent=self)
-            self._track_dialog(self._mem_dialog, self._btn_memory)
+            self._track_dialog(self._mem_dialog, self._act_memory)
         if not self._mem_dialog.isVisible():
             device_text = self._device_combo.currentText()
             self._mem_dialog.set_device(
@@ -1330,7 +1339,7 @@ class MainWindow(QMainWindow):
     def _show_net_dialog(self) -> None:
         if self._net_dialog is None:
             self._net_dialog = NetDialog(parent=self)
-            self._track_dialog(self._net_dialog, self._btn_network)
+            self._track_dialog(self._net_dialog, self._act_network)
         if not self._net_dialog.isVisible():
             device_text = self._device_combo.currentText()
             self._net_dialog.set_device(
@@ -1343,7 +1352,7 @@ class MainWindow(QMainWindow):
     def _show_packages_dialog(self) -> None:
         if self._packages_dialog is None:
             self._packages_dialog = PackagesDialog(parent=self)
-            self._track_dialog(self._packages_dialog, self._btn_packages)
+            self._track_dialog(self._packages_dialog, self._act_packages)
         if not self._packages_dialog.isVisible():
             device_text = self._device_combo.currentText()
             self._packages_dialog.set_device(
