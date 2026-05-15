@@ -852,15 +852,17 @@ class MainWindow(QMainWindow):
             )
         menu.addAction("Copy message", lambda: QApplication.clipboard().setText(rec.message))
         menu.addSeparator()
-        if self._model.is_bookmarked(rec.row_id):
+        if rec.level == "B":
             menu.addAction(
                 "Remove bookmark\tCtrl+B",
-                lambda rid=rec.row_id: self._toggle_bookmark_for_row_id(rid),
+                lambda rid=rec.row_id: self._remove_bookmark_for_row_id(rid),
             )
         else:
+            src_idx = self._proxy.mapToSource(self._proxy.index(idx.row(), 0))
+            src_row = src_idx.row()
             menu.addAction(
                 "Add bookmark\tCtrl+B",
-                lambda rid=rec.row_id: self._toggle_bookmark_for_row_id(rid),
+                lambda sr=src_row: self._add_bookmark_at_source_row(sr),
             )
         menu.addSeparator()
         menu.addAction(
@@ -923,9 +925,8 @@ class MainWindow(QMainWindow):
     def _clear_logs(self) -> None:
         # 1. Wipe in-app state
         self._db_buffer.clear()
-        self._model.clear_bookmarks()
-        self._refresh_bookmarks_dialog_if_visible()
         self._model.clear()
+        self._refresh_bookmarks_dialog_if_visible()
         self._db.clear()
         self._next_row_id = 1
         self._timeline.reset([])
@@ -1033,9 +1034,8 @@ class MainWindow(QMainWindow):
                 records = _load_text_file(path)
 
             self._db_buffer.clear()           # drop unflushed rows before replacing DB
-            self._model.clear_bookmarks()
-            self._refresh_bookmarks_dialog_if_visible()
             self._model.clear()
+            self._refresh_bookmarks_dialog_if_visible()
             self._db.clear()
             self._next_row_id = 1
             self._stats.reset()
@@ -1208,14 +1208,25 @@ class MainWindow(QMainWindow):
         )
         if rec is None:
             return
-        self._toggle_bookmark_for_row_id(rec.row_id)
+        if rec.level == "B":
+            self._remove_bookmark_for_row_id(rec.row_id)
+        else:
+            src_row = self._proxy.mapToSource(self._proxy.index(idx.row(), 0)).row()
+            self._add_bookmark_at_source_row(src_row)
 
-    def _toggle_bookmark_for_row_id(self, row_id: int) -> None:
-        state = self._model.toggle_bookmark(row_id)
+    def _add_bookmark_at_source_row(self, source_row: int) -> None:
+        row_id = self._next_row_id
+        self._next_row_id += 1
+        new_row = self._model.insert_bookmark_after(source_row, row_id)
+        if new_row < 0:
+            return
         self._refresh_bookmarks_dialog_if_visible()
-        self.statusBar().showMessage(
-            "Bookmark added." if state else "Bookmark removed.", 2000
-        )
+        self.statusBar().showMessage("Bookmark added.", 2000)
+
+    def _remove_bookmark_for_row_id(self, row_id: int) -> None:
+        if self._model.remove_bookmark_row(row_id):
+            self._refresh_bookmarks_dialog_if_visible()
+            self.statusBar().showMessage("Bookmark removed.", 2000)
 
     def _jump_to_row_id(self, row_id: int) -> None:
         src_row = self._model.find_row_for_row_id(row_id)

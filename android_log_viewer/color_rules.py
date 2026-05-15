@@ -12,6 +12,7 @@ DEFAULT_LEVEL_FG: dict[str, str] = {
     "W": "#E65100",
     "E": "#B71C1C",
     "F": "#FFFFFF",
+    "B": "#1A237E",
 }
 
 DEFAULT_LEVEL_BG: dict[str, str] = {
@@ -21,6 +22,7 @@ DEFAULT_LEVEL_BG: dict[str, str] = {
     "W": "#FFF8E1",
     "E": "#FFEBEE",
     "F": "#B71C1C",
+    "B": "#E8EAF6",
 }
 
 

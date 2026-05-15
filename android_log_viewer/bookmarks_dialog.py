@@ -73,12 +73,9 @@ class BookmarksDialog(QDialog):
             self._list.addItem(self._make_item(rec))
 
     def _make_item(self, rec: LogRecord) -> QListWidgetItem:
-        msg_head = rec.message.split("\n", 1)[0]
-        if len(msg_head) > 200:
-            msg_head = msg_head[:200] + "…"
         visible = self._proxy.accepts_for_timeline(rec)
         suffix = "" if visible else "   (hidden by filter)"
-        text = f"{rec.timestamp}  {rec.level}  {rec.tag}: {msg_head}{suffix}"
+        text = f"{rec.timestamp}  B  (bookmark){suffix}"
         item = QListWidgetItem(text)
         item.setData(Qt.UserRole, rec.row_id)
         if not visible:
@@ -95,9 +92,9 @@ class BookmarksDialog(QDialog):
         for item in list(self._list.selectedItems()):
             row_id = item.data(Qt.UserRole)
             if isinstance(row_id, int):
-                self._model.remove_bookmark(row_id)
+                self._model.remove_bookmark_row(row_id)
         self.refresh()
 
     def _on_clear(self) -> None:
-        self._model.clear_bookmarks()
+        self._model.clear_bookmark_rows()
         self.refresh()

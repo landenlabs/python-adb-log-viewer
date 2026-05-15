@@ -46,7 +46,7 @@ class AppSettings:
         self.exclude_rules: List[ExcludeRule] = []
         self.theme: str = "light"
         # Persist level filter checkbox states
-        self.level_filters: Set[str] = {"D", "I", "W", "E"}
+        self.level_filters: Set[str] = {"D", "I", "W", "E", "B"}
         # Level colors
         from .color_rules import DEFAULT_LEVEL_FG, DEFAULT_LEVEL_BG, ColorRule
         self.level_fg: dict[str, str] = dict(DEFAULT_LEVEL_FG)
@@ -95,6 +95,7 @@ class AppSettings:
             s.theme = data["theme"]
         if "level_filters" in data:
             s.level_filters = set(data["level_filters"])
+            s.level_filters.add("B")  # always show bookmarks by default
         if "exclude_rules" in data:
             s.exclude_rules = [
                 ExcludeRule(

@@ -52,8 +52,11 @@ class LogModel(QAbstractTableModel):
         self._level_fg: dict[str, QColor] = dict(LEVEL_FG)
         self._level_bg: dict[str, QColor] = dict(LEVEL_BG)
         self._color_rules: List[_CompiledRule] = []
-        # Bookmarks keyed by row_id (stable across filter changes)
-        self._bookmarks: Set[int] = set()
+        # row_id -> source-row index of the head record. Sub-rows share a row_id
+        # with their parent and are not tracked here. Maintained across all
+        # mutations so find_row_for_row_id is O(1) regardless of insertion order
+        # (bookmark rows can land anywhere, breaking the old monotonic invariant).
+        self._row_id_index: dict[int, int] = {}
 
     # ------------------------------------------------------------------ Qt API
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
@@ -77,8 +80,6 @@ class LogModel(QAbstractTableModel):
 
         if role == Qt.DisplayRole:
             if col == COL_TIME:
-                if rec.row_id in self._bookmarks and not rec.is_sub_row:
-                    return "★ " + rec.timestamp
                 return rec.timestamp
             if col == COL_PID:     return rec.pid
             if col == COL_TID:     return rec.tid
@@ -156,7 +157,11 @@ class LogModel(QAbstractTableModel):
 
     def set_font_size(self, pt: int) -> None:
         self._font = QFont("Courier New", pt)
-        self.layoutChanged.emit()
+        rows = len(self._records)
+        if rows:
+            top = self.index(0, 0)
+            bottom = self.index(rows - 1, self.columnCount() - 1)
+            self.dataChanged.emit(top, bottom, [Qt.FontRole, Qt.SizeHintRole])
 
     def set_color_config(
         self,
@@ -200,7 +205,15 @@ class LogModel(QAbstractTableModel):
             rec._cached_fg = None
             rec._cached_highlights = None
 
-        self.layoutChanged.emit()
+        rows = len(self._records)
+        if rows:
+            top = self.index(0, 0)
+            bottom = self.index(rows - 1, self.columnCount() - 1)
+            self.dataChanged.emit(
+                top,
+                bottom,
+                [Qt.BackgroundRole, Qt.ForegroundRole, HIGHLIGHT_ROLE],
+            )
 
     def set_merge_enabled(self, enabled: bool) -> None:
         self._merge_enabled = enabled
@@ -226,6 +239,9 @@ class LogModel(QAbstractTableModel):
         last = first + len(records) - 1
         self.beginInsertRows(QModelIndex(), first, last)
         self._records.extend(records)
+        for i, rec in enumerate(records, start=first):
+            if not rec.is_sub_row:
+                self._row_id_index[rec.row_id] = i
         self.endInsertRows()
 
     def _find_tail(self) -> Tuple[Optional[LogRecord], int]:
@@ -301,15 +317,18 @@ class LogModel(QAbstractTableModel):
             self.beginInsertRows(QModelIndex(), insert_at, insert_at + len(sub_rows) - 1)
             self._records[insert_at:insert_at] = sub_rows
             rec._expanded = True
+            self._shift_index_from(insert_at, len(sub_rows))
             self.endInsertRows()
         else:
             end = source_row + 1
             while end < len(self._records) and self._records[end].is_sub_row:
                 end += 1
             if end > source_row + 1:
+                removed = end - (source_row + 1)
                 self.beginRemoveRows(QModelIndex(), source_row + 1, end - 1)
                 del self._records[source_row + 1:end]
                 rec._expanded = False
+                self._shift_index_from(source_row + 1, -removed)
                 self.endRemoveRows()
 
         head_idx = self.index(source_row, COL_MSG)
@@ -323,18 +342,19 @@ class LogModel(QAbstractTableModel):
         # Don't orphan sub-rows that immediately follow the last pruned record
         while actual < len(self._records) and self._records[actual].is_sub_row:
             actual += 1
-        # Drop bookmarks that point at rows being pruned
-        if self._bookmarks:
-            pruned_ids = {r.row_id for r in self._records[:actual]}
-            self._bookmarks -= pruned_ids
+        pruned_ids = {r.row_id for r in self._records[:actual] if not r.is_sub_row}
         self.beginRemoveRows(QModelIndex(), 0, actual - 1)
         del self._records[:actual]
+        for rid in pruned_ids:
+            self._row_id_index.pop(rid, None)
+        for rid in list(self._row_id_index):
+            self._row_id_index[rid] -= actual
         self.endRemoveRows()
 
     def clear(self) -> None:
         self.beginResetModel()
         self._records.clear()
-        self._bookmarks.clear()
+        self._row_id_index.clear()
         self.endResetModel()
 
     # ------------------------------------------------------------------ read
@@ -348,73 +368,70 @@ class LogModel(QAbstractTableModel):
 
     def find_row_for_row_id(self, row_id: int) -> int:
         """Return the source-model row index of the head record with this row_id,
-        or -1 if not present. row_ids are monotonically non-decreasing in _records
-        (sub-rows share their parent's row_id), so binary search works."""
-        if not self._records:
-            return -1
-        lo, hi = 0, len(self._records) - 1
-        while lo <= hi:
-            mid = (lo + hi) // 2
-            rec = self._records[mid]
-            if rec.row_id == row_id:
-                while mid > 0 and self._records[mid].is_sub_row:
-                    mid -= 1
-                if self._records[mid].row_id == row_id and not self._records[mid].is_sub_row:
-                    return mid
-                return -1
-            if rec.row_id < row_id:
-                lo = mid + 1
-            else:
-                hi = mid - 1
-        return -1
+        or -1 if not present."""
+        return self._row_id_index.get(row_id, -1)
+
+    def _shift_index_from(self, threshold: int, delta: int) -> None:
+        """Adjust _row_id_index entries with value >= threshold by delta."""
+        if delta == 0:
+            return
+        for rid, pos in self._row_id_index.items():
+            if pos >= threshold:
+                self._row_id_index[rid] = pos + delta
 
     # ------------------------------------------------------------------ bookmarks
-    def is_bookmarked(self, row_id: int) -> bool:
-        return row_id in self._bookmarks
+    def insert_bookmark_after(self, source_row: int, row_id: int) -> int:
+        """Insert a level-B bookmark row directly after source_row (skipping any
+        sub-rows that belong to it). Returns the new row's source index, or -1
+        if source_row is out of range."""
+        if source_row < 0 or source_row >= len(self._records):
+            return -1
+        insert_at = source_row + 1
+        while insert_at < len(self._records) and self._records[insert_at].is_sub_row:
+            insert_at += 1
+        rec = self._records[source_row]
+        head_ts = rec.timestamp
+        bookmark = LogRecord(
+            row_id=row_id,
+            timestamp=head_ts,
+            pid="",
+            tid="",
+            level="B",
+            tag="",
+            message="",
+        )
+        self.beginInsertRows(QModelIndex(), insert_at, insert_at)
+        self._records.insert(insert_at, bookmark)
+        self._shift_index_from(insert_at, 1)
+        self._row_id_index[row_id] = insert_at
+        self.endInsertRows()
+        return insert_at
 
-    def toggle_bookmark(self, row_id: int) -> bool:
-        """Add or remove the bookmark. Returns the new state (True = bookmarked)."""
-        if row_id in self._bookmarks:
-            self._bookmarks.discard(row_id)
-            state = False
-        else:
-            self._bookmarks.add(row_id)
-            state = True
-        self._refresh_time_cell_for_row_id(row_id)
-        return state
+    def remove_bookmark_row(self, row_id: int) -> bool:
+        """Remove the bookmark row with the given row_id. Returns True on success."""
+        pos = self._row_id_index.get(row_id, -1)
+        if pos < 0 or pos >= len(self._records):
+            return False
+        rec = self._records[pos]
+        if rec.level != "B":
+            return False
+        self.beginRemoveRows(QModelIndex(), pos, pos)
+        del self._records[pos]
+        self._row_id_index.pop(row_id, None)
+        self._shift_index_from(pos, -1)
+        self.endRemoveRows()
+        return True
 
-    def add_bookmark(self, row_id: int) -> None:
-        if row_id not in self._bookmarks:
-            self._bookmarks.add(row_id)
-            self._refresh_time_cell_for_row_id(row_id)
-
-    def remove_bookmark(self, row_id: int) -> None:
-        if row_id in self._bookmarks:
-            self._bookmarks.discard(row_id)
-            self._refresh_time_cell_for_row_id(row_id)
-
-    def clear_bookmarks(self) -> None:
-        if not self._bookmarks:
-            return
-        self._bookmarks.clear()
-        # Repaint all time cells — cheap enough vs. tracking each row.
-        if self._records:
-            top = self.index(0, COL_TIME)
-            bot = self.index(len(self._records) - 1, COL_TIME)
-            self.dataChanged.emit(top, bot, [Qt.DisplayRole])
+    def clear_bookmark_rows(self) -> int:
+        """Remove all bookmark rows. Returns the number removed."""
+        ids = [r.row_id for r in self._records if r.level == "B" and not r.is_sub_row]
+        for rid in ids:
+            self.remove_bookmark_row(rid)
+        return len(ids)
 
     def bookmarked_records(self) -> List[LogRecord]:
-        """Return head records (not sub-rows) whose row_id is bookmarked, in row order."""
-        return [
-            r for r in self._records
-            if not r.is_sub_row and r.row_id in self._bookmarks
-        ]
-
-    def _refresh_time_cell_for_row_id(self, row_id: int) -> None:
-        row = self.find_row_for_row_id(row_id)
-        if row >= 0:
-            idx = self.index(row, COL_TIME)
-            self.dataChanged.emit(idx, idx, [Qt.DisplayRole])
+        """Return all bookmark rows (level == "B") in row order."""
+        return [r for r in self._records if r.level == "B" and not r.is_sub_row]
 
     def find_row_for_timestamp(self, ts: str) -> int:
         """Binary search: first row whose timestamp >= ts."""
@@ -510,7 +527,7 @@ class LogFilterProxy(QSortFilterProxyModel):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self._allowed: Set[str] = {"V", "D", "I", "W", "E", "F"}
+        self._allowed: Set[str] = {"V", "D", "I", "W", "E", "F", "B"}
         self._tag_rx: Optional[re.Pattern] = None
         self._text_rx: Optional[re.Pattern] = None
         self._pid_set: Set[str] = set()   # empty = all PIDs

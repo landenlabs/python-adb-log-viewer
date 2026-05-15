@@ -39,6 +39,7 @@ _LEVEL_LABELS = {
     "W": "W  Warning",
     "E": "E  Error",
     "F": "F  Fatal",
+    "B": "B  Bookmark",
 }
 
 

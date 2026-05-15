@@ -1,7 +1,7 @@
 from __future__ import annotations
 from PySide6.QtGui import QColor
 
-LEVELS: list[str] = ["V", "D", "I", "W", "E", "F"]
+LEVELS: list[str] = ["V", "D", "I", "W", "E", "F", "B"]
 
 LEVEL_BG: dict[str, QColor] = {
     "V": QColor("#EEEEEE"),
@@ -10,6 +10,7 @@ LEVEL_BG: dict[str, QColor] = {
     "W": QColor("#FFF8E1"),
     "E": QColor("#FFEBEE"),
     "F": QColor("#B71C1C"),
+    "B": QColor("#E8EAF6"),
 }
 
 LEVEL_FG: dict[str, QColor] = {
@@ -19,6 +20,7 @@ LEVEL_FG: dict[str, QColor] = {
     "W": QColor("#E65100"),
     "E": QColor("#B71C1C"),
     "F": QColor("#FFFFFF"),
+    "B": QColor("#1A237E"),
 }
 
 LEVEL_NAMES: dict[str, str] = {
@@ -28,6 +30,7 @@ LEVEL_NAMES: dict[str, str] = {
     "W": "Warning",
     "E": "Error",
     "F": "Fatal/Assert",
+    "B": "Bookmark",
 }
 
 LEVEL_SEVERITY: dict[str, int] = {
@@ -37,6 +40,7 @@ LEVEL_SEVERITY: dict[str, int] = {
     "W": 3,
     "E": 4,
     "F": 5,
+    "B": 6,
 }
 
 # Maximum number of records to keep in memory/DB.
@@ -51,4 +55,5 @@ TIMELINE_BAR_COLORS: dict[str, QColor] = {
     "W": QColor("#FFA726"),
     "E": QColor("#EF5350"),
     "F": QColor("#AB47BC"),
+    "B": QColor("#3F51B5"),
 }
