@@ -39,6 +39,9 @@ class SettingsDialog(QDialog):
     """
 
     settings_applied = Signal()
+    # Emitted as soon as the user picks a theme in the combo, so the main
+    # window can re-apply styling without waiting for OK.
+    theme_changed = Signal(str)
 
     def __init__(
         self,
@@ -99,6 +102,7 @@ class SettingsDialog(QDialog):
         layout.addWidget(QLabel("Theme:"))
         self._theme_combo = QComboBox()
         self._theme_combo.addItems(["Light", "Dark"])
+        self._theme_combo.currentTextChanged.connect(self._on_theme_combo_changed)
         layout.addWidget(self._theme_combo)
         layout.addSpacing(16)
         self._merge_cb = QCheckBox("Merge same-time + tag messages")
@@ -278,7 +282,9 @@ class SettingsDialog(QDialog):
     # ================================================================== load / save
 
     def _load(self) -> None:
+        self._theme_combo.blockSignals(True)
         self._theme_combo.setCurrentText(self._settings.theme.capitalize())
+        self._theme_combo.blockSignals(False)
         self._merge_cb.setChecked(self._settings.merge_same_time_tag)
         self._timeline_filter_cb.setChecked(self._settings.timeline_follows_filter)
         self._compact_rows_cb.setChecked(self._settings.compact_rows)
@@ -302,6 +308,17 @@ class SettingsDialog(QDialog):
         self._rules_table.blockSignals(False)
 
         self._update_command_preview()
+
+    def _on_theme_combo_changed(self, text: str) -> None:
+        """Apply theme the moment the user picks it — and persist, so closing
+        with Cancel still keeps the new theme. The user asked for "immediate"
+        and intuitively expects the visible choice to stick."""
+        theme = text.lower()
+        if theme == self._settings.theme:
+            return
+        self._settings.theme = theme
+        self._settings.save()
+        self.theme_changed.emit(theme)
 
     def _on_accept(self) -> None:
         self._settings.theme = self._theme_combo.currentText().lower()
@@ -390,15 +407,13 @@ class SettingsDialog(QDialog):
     # ================================================================== row helpers
 
     def _add_row(self, pattern: str = "", field: str = "TAG", enabled: bool = True) -> None:
+        from .colors_dialog import _make_cell_checkbox
         row = self._rules_table.rowCount()
         self._rules_table.insertRow(row)
 
-        # Col 0: enabled checkbox (checkable item, no text)
-        chk = QTableWidgetItem()
-        chk.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsUserCheckable)
-        chk.setCheckState(Qt.Checked if enabled else Qt.Unchecked)
-        chk.setTextAlignment(Qt.AlignCenter)
-        self._rules_table.setItem(row, 0, chk)
+        # Col 0: enabled — real QCheckBox (item check states render as black
+        # squares under the dark stylesheet).
+        self._rules_table.setCellWidget(row, 0, _make_cell_checkbox(enabled))
 
         # Col 1: pattern — editable text
         pat = QTableWidgetItem(pattern)
@@ -427,9 +442,9 @@ class SettingsDialog(QDialog):
         self._update_command_preview()
 
     def _collect_rules(self) -> List[ExcludeRule]:
+        from .colors_dialog import _cell_checked
         rules: List[ExcludeRule] = []
         for row in range(self._rules_table.rowCount()):
-            chk = self._rules_table.item(row, 0)
             pat = self._rules_table.item(row, 1)
             combo: Optional[QComboBox] = self._rules_table.cellWidget(row, 2)
             if pat is None or combo is None:
@@ -440,7 +455,7 @@ class SettingsDialog(QDialog):
             rules.append(ExcludeRule(
                 pattern=text,
                 field=combo.currentText(),
-                enabled=(chk.checkState() == Qt.Checked) if chk else True,
+                enabled=_cell_checked(self._rules_table.cellWidget(row, 0)),
             ))
         return rules
 

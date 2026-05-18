@@ -20,6 +20,8 @@ BUFFER_NAMES: List[str] = [name for name, _ in BUFFER_INFO]
 
 EXCLUDE_FIELDS = ("PID", "TAG", "MESSAGE")
 
+RECENT_CAP = 20
+
 
 @dataclass
 class ExcludeRule:
@@ -59,6 +61,9 @@ class AppSettings:
         self.adb_path: str = ""   # empty = use platform default (adb / adb.exe)
         self.startup_tag: str = ""
         self.startup_text: str = ""
+        # Recently used filter patterns, newest first. Capped at RECENT_CAP.
+        self.recent_tags: List[str] = []
+        self.recent_texts: List[str] = []
 
     # ------------------------------------------------------------------ persistence
 
@@ -82,6 +87,8 @@ class AppSettings:
             "adb_path": self.adb_path,
             "startup_tag": self.startup_tag,
             "startup_text": self.startup_text,
+            "recent_tags": self.recent_tags[:RECENT_CAP],
+            "recent_texts": self.recent_texts[:RECENT_CAP],
         }
 
     def save(self) -> None:
@@ -136,6 +143,10 @@ class AppSettings:
             s.startup_tag = data["startup_tag"]
         if "startup_text" in data and isinstance(data["startup_text"], str):
             s.startup_text = data["startup_text"]
+        if "recent_tags" in data and isinstance(data["recent_tags"], list):
+            s.recent_tags = [str(x) for x in data["recent_tags"] if isinstance(x, str)][:RECENT_CAP]
+        if "recent_texts" in data and isinstance(data["recent_texts"], list):
+            s.recent_texts = [str(x) for x in data["recent_texts"] if isinstance(x, str)][:RECENT_CAP]
         return s
 
     @classmethod

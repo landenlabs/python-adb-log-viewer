@@ -108,6 +108,86 @@ class ColorButton(QPushButton):
         self.color_changed.emit("")
 
 
+def _make_cell_checkbox(checked: bool, tooltip: str = "") -> QWidget:
+    """Real QCheckBox centered in a wrapper widget. Item-style check states
+    (setCheckState on QTableWidgetItem) render as featureless squares under
+    the dark stylesheet — using a real checkbox picks up theme styling."""
+    wrap = QWidget()
+    layout = QHBoxLayout(wrap)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setAlignment(Qt.AlignCenter)
+    cb = QCheckBox()
+    cb.setChecked(checked)
+    if tooltip:
+        cb.setToolTip(tooltip)
+        wrap.setToolTip(tooltip)
+    layout.addWidget(cb)
+    return wrap
+
+
+def _cell_checked(wrap: Optional[QWidget]) -> bool:
+    if wrap is None:
+        return False
+    cb = wrap.findChild(QCheckBox)
+    return bool(cb and cb.isChecked())
+
+
+class _ReorderableTable(QTableWidget):
+    """QTableWidget that supports drag-and-drop row reordering.
+    Emits row_moved(src, dest) so the host can rebuild rows — Qt's built-in
+    InternalMove drops cell widgets (combos, color buttons, checkboxes)
+    behind in their original positions, so we don't let it touch the data."""
+
+    row_moved = Signal(int, int)
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDragDropMode(QAbstractItemView.InternalMove)
+        self.setDragDropOverwriteMode(False)
+        self.setDropIndicatorShown(True)
+        self.setSelectionBehavior(QAbstractItemView.SelectRows)
+        # Multi-row drag would need batched moves; keep it single-row for now.
+        self.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.verticalHeader().setSectionsMovable(False)
+
+    def dropEvent(self, event) -> None:
+        if event.source() is not self:
+            super().dropEvent(event)
+            return
+        sel = self.selectionModel().selectedRows()
+        if not sel:
+            event.ignore()
+            return
+        src_row = sel[0].row()
+
+        # Resolve drop position to a target row index.
+        pos = event.position().toPoint()
+        idx = self.indexAt(pos)
+        if idx.isValid():
+            rect = self.visualRect(idx)
+            dest_row = idx.row()
+            if pos.y() > rect.top() + rect.height() / 2:
+                dest_row += 1
+        else:
+            dest_row = self.rowCount()
+
+        # Removing the source row shifts everything below it up by one;
+        # adjust the destination accordingly so the user's visual intent
+        # is preserved.
+        if dest_row > src_row:
+            dest_row -= 1
+
+        # Accept the event so Qt doesn't also try to perform its own move
+        # (which would orphan our cell widgets), but only emit the signal
+        # if the row actually changes position.
+        event.setDropAction(Qt.IgnoreAction)
+        event.accept()
+        if dest_row != src_row and 0 <= dest_row <= self.rowCount() - 1:
+            self.row_moved.emit(src_row, dest_row)
+
+
 class CollapsibleBox(QWidget):
     """A simple collapsible container with a title and a toggle button."""
 
@@ -306,19 +386,25 @@ class ColorsDialog(QDialog):
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # Table
-        self._rules_table = QTableWidget()
+        # Table (custom subclass so rules can be reordered via drag-drop;
+        # rule priority is first-match-wins so order is meaningful)
+        self._rules_table = _ReorderableTable()
         self._rules_table.setColumnCount(6)
         self._rules_table.setHorizontalHeaderLabels(
             ["On", "Pattern  (regex, case-insensitive)", "Field", "Foreground", "Background", "Row"]
         )
-        self._rules_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self._rules_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self._rules_table.setEditTriggers(
             QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed
         )
-        self._rules_table.verticalHeader().setVisible(False)
+        self._rules_table.setToolTip(
+            "Color rules apply in order — the first match wins.\n"
+            "Drag a row by its non-editable cells to change priority."
+        )
+        self._rules_table.row_moved.connect(self._on_rule_row_moved)
+        self._rules_table.verticalHeader().setVisible(True)
         self._rules_table.verticalHeader().setDefaultSectionSize(28)
+        self._rules_table.verticalHeader().setSectionResizeMode(QHeaderView.Fixed)
+        self._rules_table.verticalHeader().setFixedWidth(24)
         self._rules_table.setShowGrid(True)
         self._rules_table.setSortingEnabled(False)
         self._rules_table.setAlternatingRowColors(True)
@@ -448,14 +534,12 @@ class ColorsDialog(QDialog):
         row = self._rules_table.rowCount()
         self._rules_table.insertRow(row)
 
-        # Col 0: On — checkbox item
-        chk = QTableWidgetItem()
-        chk.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsUserCheckable)
-        chk.setCheckState(Qt.Checked if (rule is None or rule.enabled) else Qt.Unchecked)
-        chk.setTextAlignment(Qt.AlignCenter)
-        self._rules_table.setItem(row, 0, chk)
+        # Col 0: On — real QCheckBox (item check-states render as featureless
+        # squares under our dark stylesheet).
+        on_wrap = _make_cell_checkbox(rule is None or rule.enabled)
+        self._rules_table.setCellWidget(row, 0, on_wrap)
 
-        # Col 1: Pattern — editable text
+        # Col 1: Pattern — editable text, painted with the rule's colors as a preview.
         pat = QTableWidgetItem(rule.pattern if rule else "")
         self._rules_table.setItem(row, 1, pat)
 
@@ -467,27 +551,31 @@ class ColorsDialog(QDialog):
         combo.setFrame(False)
         self._rules_table.setCellWidget(row, 2, combo)
 
-        # Col 3: Foreground — ColorButton
+        # Col 3: Foreground — ColorButton (refresh preview on change)
         fg_btn = ColorButton(rule.fg if rule else "")
+        fg_btn.color_changed.connect(
+            lambda _c, b=fg_btn: self._refresh_rule_preview_for_btn(b)
+        )
         self._rules_table.setCellWidget(row, 3, fg_btn)
 
-        # Col 4: Background — ColorButton
+        # Col 4: Background — ColorButton (refresh preview on change)
         bg_btn = ColorButton(rule.bg if rule else "")
+        bg_btn.color_changed.connect(
+            lambda _c, b=bg_btn: self._refresh_rule_preview_for_btn(b)
+        )
         self._rules_table.setCellWidget(row, 4, bg_btn)
 
-        # Col 5: Entire Row — checkbox item
-        row_chk = QTableWidgetItem()
-        row_chk.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsUserCheckable)
-        row_chk.setCheckState(
-            Qt.Checked if (rule is None or rule.entire_row) else Qt.Unchecked
+        # Col 5: Entire Row — real QCheckBox
+        row_wrap = _make_cell_checkbox(
+            rule is None or rule.entire_row,
+            tooltip=(
+                "Checked: apply colors to the entire row.\n"
+                "Unchecked: highlight only the matching text in the Tag or Message column."
+            ),
         )
-        row_chk.setToolTip(
-            "Checked: apply colors to the entire row.\n"
-            "Unchecked: highlight only the matching text in the Tag or Message column."
-        )
-        row_chk.setTextAlignment(Qt.AlignCenter)
-        self._rules_table.setItem(row, 5, row_chk)
+        self._rules_table.setCellWidget(row, 5, row_wrap)
 
+        self._refresh_rule_preview(row)
         self._rules_table.scrollToBottom()
         if rule is None:
             self._rules_table.editItem(self._rules_table.item(row, 1))
@@ -496,11 +584,8 @@ class ColorsDialog(QDialog):
         row = self._exclude_table.rowCount()
         self._exclude_table.insertRow(row)
 
-        chk = QTableWidgetItem()
-        chk.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsUserCheckable)
-        chk.setCheckState(Qt.Checked if (rule is None or rule.enabled) else Qt.Unchecked)
-        chk.setTextAlignment(Qt.AlignCenter)
-        self._exclude_table.setItem(row, 0, chk)
+        on_wrap = _make_cell_checkbox(rule is None or rule.enabled)
+        self._exclude_table.setCellWidget(row, 0, on_wrap)
 
         pat = QTableWidgetItem(rule.pattern if rule else "")
         self._exclude_table.setItem(row, 1, pat)
@@ -515,6 +600,67 @@ class ColorsDialog(QDialog):
         self._exclude_table.scrollToBottom()
         if rule is None:
             self._exclude_table.editItem(self._exclude_table.item(row, 1))
+
+    # ---------- drag-drop reorder ----------
+    def _snapshot_color_rules(self) -> List[ColorRule]:
+        """Capture every row's data verbatim, including blank-pattern rows,
+        so a reorder doesn't drop in-progress entries."""
+        rules: List[ColorRule] = []
+        for row in range(self._rules_table.rowCount()):
+            pat = self._rules_table.item(row, 1)
+            combo: Optional[QComboBox] = self._rules_table.cellWidget(row, 2)
+            fg_btn: Optional[ColorButton] = self._rules_table.cellWidget(row, 3)
+            bg_btn: Optional[ColorButton] = self._rules_table.cellWidget(row, 4)
+            rules.append(ColorRule(
+                pattern=(pat.text() if pat else ""),
+                field=combo.currentText() if combo else "TAG",
+                fg=fg_btn.color() if fg_btn else "",
+                bg=bg_btn.color() if bg_btn else "",
+                entire_row=_cell_checked(self._rules_table.cellWidget(row, 5)),
+                enabled=_cell_checked(self._rules_table.cellWidget(row, 0)),
+            ))
+        return rules
+
+    def _on_rule_row_moved(self, src: int, dest: int) -> None:
+        rules = self._snapshot_color_rules()
+        if not (0 <= src < len(rules)) or not (0 <= dest < len(rules)):
+            return
+        rule = rules.pop(src)
+        rules.insert(dest, rule)
+        # Rebuild from scratch — Qt would otherwise leave cell widgets behind.
+        self._rules_table.setRowCount(0)
+        for r in rules:
+            self._add_rule_row(r)
+        self._rules_table.selectRow(dest)
+
+    # ---------- rule preview helpers ----------
+    def _refresh_rule_preview(self, row: int) -> None:
+        """Paint the Pattern cell with the row's fg/bg colors as a preview."""
+        if row < 0 or row >= self._rules_table.rowCount():
+            return
+        pat = self._rules_table.item(row, 1)
+        if pat is None:
+            return
+        fg_btn = self._rules_table.cellWidget(row, 3)
+        bg_btn = self._rules_table.cellWidget(row, 4)
+        if isinstance(fg_btn, ColorButton) and fg_btn.color():
+            pat.setForeground(QColor(fg_btn.color()))
+        else:
+            pat.setData(Qt.ForegroundRole, None)
+        if isinstance(bg_btn, ColorButton) and bg_btn.color():
+            pat.setBackground(QColor(bg_btn.color()))
+        else:
+            pat.setData(Qt.BackgroundRole, None)
+
+    def _refresh_rule_preview_for_btn(self, btn: ColorButton) -> None:
+        """Locate the row owning this ColorButton and refresh its preview."""
+        for row in range(self._rules_table.rowCount()):
+            if (
+                self._rules_table.cellWidget(row, 3) is btn
+                or self._rules_table.cellWidget(row, 4) is btn
+            ):
+                self._refresh_rule_preview(row)
+                return
 
     def _delete_selected_rules(self) -> None:
         rows = sorted(
@@ -535,12 +681,10 @@ class ColorsDialog(QDialog):
     def _collect_color_rules(self) -> List[ColorRule]:
         rules: List[ColorRule] = []
         for row in range(self._rules_table.rowCount()):
-            chk = self._rules_table.item(row, 0)
             pat = self._rules_table.item(row, 1)
             combo: Optional[QComboBox] = self._rules_table.cellWidget(row, 2)
             fg_btn: Optional[ColorButton] = self._rules_table.cellWidget(row, 3)
             bg_btn: Optional[ColorButton] = self._rules_table.cellWidget(row, 4)
-            row_chk = self._rules_table.item(row, 5)
             if pat is None:
                 continue
             text = pat.text().strip()
@@ -551,15 +695,14 @@ class ColorsDialog(QDialog):
                 field=combo.currentText() if combo else "TAG",
                 fg=fg_btn.color() if fg_btn else "",
                 bg=bg_btn.color() if bg_btn else "",
-                entire_row=(row_chk.checkState() == Qt.Checked) if row_chk else True,
-                enabled=(chk.checkState() == Qt.Checked) if chk else True,
+                entire_row=_cell_checked(self._rules_table.cellWidget(row, 5)),
+                enabled=_cell_checked(self._rules_table.cellWidget(row, 0)),
             ))
         return rules
 
     def _collect_exclude_rules(self) -> List[ExcludeRule]:
         rules: List[ExcludeRule] = []
         for row in range(self._exclude_table.rowCount()):
-            chk = self._exclude_table.item(row, 0)
             pat = self._exclude_table.item(row, 1)
             combo: Optional[QComboBox] = self._exclude_table.cellWidget(row, 2)
             if pat is None or combo is None:
@@ -570,7 +713,7 @@ class ColorsDialog(QDialog):
             rules.append(ExcludeRule(
                 pattern=text,
                 field=combo.currentText(),
-                enabled=(chk.checkState() == Qt.Checked) if chk else True,
+                enabled=_cell_checked(self._exclude_table.cellWidget(row, 0)),
             ))
         return rules
 

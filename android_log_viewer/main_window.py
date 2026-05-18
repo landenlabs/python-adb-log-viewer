@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QCompleter,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -29,7 +30,7 @@ from PySide6.QtWidgets import (
 
 from .adb_reader import AdbReader, check_adb, find_adb_on_path, list_devices, parse_line, resolve_adb
 from .version import __version__
-from .app_settings import AppSettings
+from .app_settings import AppSettings, RECENT_CAP
 from .colors_dialog import ColorsDialog
 from .constants import LEVEL_NAMES, LEVELS, MAX_RECORDS, PRUNE_SIZE
 from .database import LogDatabase
@@ -57,16 +58,16 @@ _DIALOG_OPEN_STYLE = "color: #FFFFFF; background-color: #1565C0; font-weight: bo
 
 # Style for the collapsible filter-section toggles. The :checked state is the
 # expanded state; "active" property marks a section whose field has content.
+# `color` is omitted on the un-checked rules so the theme stylesheet
+# (QPushButton color) supplies it — dark text in light mode, light in dark.
 _SECTION_BUTTON_STYLE = """
 QPushButton {
     text-align: left;
     padding: 2px 6px;
-    color: black;
     background: transparent;
     border: 1px solid transparent;
 }
 QPushButton[active="true"] {
-    color: black;
     font-weight: bold;
 }
 QPushButton:checked, QPushButton[active="true"]:checked {
@@ -401,7 +402,9 @@ class MainWindow(QMainWindow):
         self._btn_record.setChecked(False)
         self._btn_record.setFixedWidth(75)
         self._btn_record.setToolTip("Toggle recording to database")
-        self._btn_record.setStyleSheet("color: #757575;")
+        # Off-state uses the theme's default button text color so it stays
+        # readable in dark mode. On-state is set in _on_record_toggled.
+        self._btn_record.setStyleSheet("")
         tb.addWidget(self._btn_record)
 
         self._btn_clear = QPushButton("Clear")
@@ -490,28 +493,32 @@ class MainWindow(QMainWindow):
         # ----- Tag -----
         self._tag_toggle = self._make_section_toggle("Tag")
         row.addWidget(self._tag_toggle)
-        self._tag_edit = QLineEdit()
-        self._tag_edit.setPlaceholderText("Tag regex…")
-        self._tag_edit.setClearButtonEnabled(True)
-        self._tag_edit.setToolTip(
-            "Filter by tag name (regex, case-insensitive).\n"
-            "Shortcut: Ctrl+L"
+        self._tag_edit = self._make_filter_combo(
+            placeholder="Tag regex…",
+            tooltip=(
+                "Filter by tag name (regex, case-insensitive).\n"
+                "Shortcut: Ctrl+L\n"
+                "Right-click for recent items."
+            ),
+            recent=self._settings.recent_tags,
         )
         row.addWidget(self._tag_edit, stretch=1)
         self._wire_section_toggle(self._tag_toggle, self._tag_edit, "Tag")
 
-        # ----- Text -----
-        self._text_toggle = self._make_section_toggle("Text")
+        # ----- Message -----
+        self._text_toggle = self._make_section_toggle("Message")
         row.addWidget(self._text_toggle)
-        self._text_edit = QLineEdit()
-        self._text_edit.setPlaceholderText("Text regex…")
-        self._text_edit.setClearButtonEnabled(True)
-        self._text_edit.setToolTip(
-            "Filter by message text or tag (regex, case-insensitive).\n"
-            "Shortcut: Ctrl+F"
+        self._text_edit = self._make_filter_combo(
+            placeholder="Message regex…",
+            tooltip=(
+                "Filter by message text or tag (regex, case-insensitive).\n"
+                "Shortcut: Ctrl+F\n"
+                "Right-click for recent items."
+            ),
+            recent=self._settings.recent_texts,
         )
         row.addWidget(self._text_edit, stretch=1)
-        self._wire_section_toggle(self._text_toggle, self._text_edit, "Text")
+        self._wire_section_toggle(self._text_toggle, self._text_edit, "Message")
 
         # ----- Search -----
         self._search_toggle = self._make_section_toggle("Search")
@@ -580,7 +587,7 @@ class MainWindow(QMainWindow):
             widget.setVisible(checked)
             if checked:
                 # Move focus into the newly opened input for quick typing.
-                if isinstance(widget, QLineEdit):
+                if isinstance(widget, (QLineEdit, QComboBox)):
                     widget.setFocus()
                 else:
                     focus_target = widget.findChild(QLineEdit)
@@ -590,14 +597,94 @@ class MainWindow(QMainWindow):
         btn.toggled.connect(on_toggle)
         widget.setVisible(False)
 
+    # ============================================================ filter combo (MRU)
+    def _make_filter_combo(
+        self, placeholder: str, tooltip: str, recent: List[str]
+    ) -> QComboBox:
+        combo = QComboBox()
+        combo.setEditable(True)
+        # We manage the MRU ourselves; Qt's auto-insert would duplicate entries
+        # and ignore our cap.
+        combo.setInsertPolicy(QComboBox.NoInsert)
+        combo.setMaxVisibleItems(15)
+        combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        # Off-the-shelf completer can over-eagerly auto-fill regex chars; keep
+        # the dropdown-only behavior of Qt's default combo completer instead.
+        completer = combo.completer()
+        if completer is not None:
+            completer.setCompletionMode(QCompleter.PopupCompletion)
+            completer.setCaseSensitivity(Qt.CaseInsensitive)
+        le = combo.lineEdit()
+        le.setPlaceholderText(placeholder)
+        le.setClearButtonEnabled(True)
+        combo.setToolTip(tooltip)
+        if recent:
+            combo.addItems(recent)
+        # Start blank — addItems selects index 0 by default.
+        combo.setCurrentIndex(-1)
+        le.clear()
+        # Custom right-click menu adds a "Clear recent" action.
+        le.setContextMenuPolicy(Qt.CustomContextMenu)
+        le.customContextMenuRequested.connect(
+            lambda pos, c=combo: self._show_filter_combo_menu(c, pos)
+        )
+        return combo
+
+    def _recent_list_for(self, combo: QComboBox) -> List[str]:
+        if combo is self._tag_edit:
+            return self._settings.recent_tags
+        if combo is self._text_edit:
+            return self._settings.recent_texts
+        return []
+
+    def _commit_recent(self, combo: QComboBox) -> None:
+        """Push the combo's current text to the front of its MRU list."""
+        text = combo.currentText().strip()
+        if not text:
+            return
+        recent = self._recent_list_for(combo)
+        if recent and recent[0] == text:
+            return  # already at top, no save needed
+        if text in recent:
+            recent.remove(text)
+        recent.insert(0, text)
+        del recent[RECENT_CAP:]
+        # Refresh the dropdown items without disturbing the edit field.
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItems(recent)
+        combo.setEditText(text)
+        combo.blockSignals(False)
+        self._settings.save()
+
+    def _show_filter_combo_menu(self, combo: QComboBox, pos) -> None:
+        le = combo.lineEdit()
+        menu = le.createStandardContextMenu()
+        menu.addSeparator()
+        recent = self._recent_list_for(combo)
+        act = menu.addAction(f"Clear recent ({len(recent)})")
+        act.setEnabled(bool(recent))
+        act.triggered.connect(lambda: self._clear_recent(combo))
+        menu.exec(le.mapToGlobal(pos))
+
+    def _clear_recent(self, combo: QComboBox) -> None:
+        recent = self._recent_list_for(combo)
+        recent.clear()
+        text = combo.currentText()
+        combo.blockSignals(True)
+        combo.clear()
+        combo.setEditText(text)
+        combo.blockSignals(False)
+        self._settings.save()
+
     def _auto_expand_filter_sections(self) -> None:
         """Open any filter section whose field already has content at startup,
         so the user can see what's active without hunting for a collapsed label."""
         if not all(cb.isChecked() for cb in self._level_cbs.values()):
             self._lvl_toggle.setChecked(True)
-        if self._tag_edit.text():
+        if self._tag_edit.currentText():
             self._tag_toggle.setChecked(True)
-        if self._text_edit.text():
+        if self._text_edit.currentText():
             self._text_toggle.setChecked(True)
         if self._search_edit.text():
             self._search_toggle.setChecked(True)
@@ -615,14 +702,30 @@ class MainWindow(QMainWindow):
             cb.toggled.connect(self._on_filter_changed)
             cb.toggled.connect(self._update_section_indicators)
 
-        self._tag_edit.textChanged.connect(self._proxy.set_tag_filter)
-        self._tag_edit.textChanged.connect(self._update_status)
-        self._tag_edit.textChanged.connect(self._schedule_timeline_filter_rebuild)
-        self._tag_edit.textChanged.connect(self._update_section_indicators)
-        self._text_edit.textChanged.connect(self._proxy.set_text_filter)
-        self._text_edit.textChanged.connect(self._update_status)
-        self._text_edit.textChanged.connect(self._schedule_timeline_filter_rebuild)
-        self._text_edit.textChanged.connect(self._update_section_indicators)
+        self._tag_edit.editTextChanged.connect(self._proxy.set_tag_filter)
+        self._tag_edit.editTextChanged.connect(self._update_status)
+        self._tag_edit.editTextChanged.connect(self._schedule_timeline_filter_rebuild)
+        self._tag_edit.editTextChanged.connect(self._update_section_indicators)
+        self._text_edit.editTextChanged.connect(self._proxy.set_text_filter)
+        self._text_edit.editTextChanged.connect(self._update_status)
+        self._text_edit.editTextChanged.connect(self._schedule_timeline_filter_rebuild)
+        self._text_edit.editTextChanged.connect(self._update_section_indicators)
+
+        # Commit the current value to the MRU when the user is "done" with it
+        # (Enter pressed or focus left). activated also fires when an item is
+        # picked from the dropdown.
+        self._tag_edit.lineEdit().editingFinished.connect(
+            lambda c=self._tag_edit: self._commit_recent(c)
+        )
+        self._text_edit.lineEdit().editingFinished.connect(
+            lambda c=self._text_edit: self._commit_recent(c)
+        )
+        self._tag_edit.activated.connect(
+            lambda _i, c=self._tag_edit: self._commit_recent(c)
+        )
+        self._text_edit.activated.connect(
+            lambda _i, c=self._text_edit: self._commit_recent(c)
+        )
 
         # Search field — does not filter, just jumps to matches.
         self._search_edit.returnPressed.connect(lambda: self._search_jump(forward=True))
@@ -716,9 +819,9 @@ class MainWindow(QMainWindow):
     # ================================================================== initial filters / auto-connect
     def _apply_initial_filters(self, tag: str, text: str) -> None:
         if tag:
-            self._tag_edit.setText(tag)
+            self._tag_edit.setEditText(tag)
         if text:
-            self._text_edit.setText(text)
+            self._text_edit.setEditText(text)
         # Auto-connect when exactly one real device is present
         current = self._device_combo.currentText()
         if self._device_combo.count() == 1 and not current.startswith("("):
@@ -820,8 +923,8 @@ class MainWindow(QMainWindow):
         all_checked = all(cb.isChecked() for cb in self._level_cbs.values())
         states = (
             (self._lvl_toggle, not all_checked),
-            (self._tag_toggle, bool(self._tag_edit.text())),
-            (self._text_toggle, bool(self._text_edit.text())),
+            (self._tag_toggle, bool(self._tag_edit.currentText())),
+            (self._text_toggle, bool(self._text_edit.currentText())),
             (self._search_toggle, bool(self._search_edit.text())),
         )
         for btn, is_active in states:
@@ -884,11 +987,12 @@ class MainWindow(QMainWindow):
         self._recording = checked
         if checked:
             self._btn_record.setText("● REC")
-            self._btn_record.setStyleSheet("color: #C62828; font-weight: bold;")
+            self._btn_record.setStyleSheet("color: #E53935; font-weight: bold;")
             self.statusBar().showMessage("Recording resumed — new logs will be saved.", 3000)
         else:
             self._btn_record.setText("○ REC")
-            self._btn_record.setStyleSheet("color: #757575;")
+            # Clear override; theme stylesheet supplies a readable text color.
+            self._btn_record.setStyleSheet("")
             self.statusBar().showMessage("Recording paused — logs are shown but not saved.", 3000)
 
     # ================================================================== capture
@@ -1175,11 +1279,11 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         menu.addAction(
             f"Filter by tag: {rec.tag}",
-            lambda t=rec.tag: self._tag_edit.setText(re_escape_tag(t)),
+            lambda t=rec.tag: self._tag_edit.setEditText(re_escape_tag(t)),
         )
         menu.addAction(
             "Exclude this tag",
-            lambda t=rec.tag: self._tag_edit.setText(f"^((?!{re_escape_tag(t)}).)*$"),
+            lambda t=rec.tag: self._tag_edit.setEditText(f"^((?!{re_escape_tag(t)}).)*$"),
         )
         menu.addAction(
             f"Save exclude rule for tag: {rec.tag}",
@@ -1394,6 +1498,7 @@ class MainWindow(QMainWindow):
         if self._settings_dialog is None:
             self._settings_dialog = SettingsDialog(self._settings, parent=self)
             self._settings_dialog.settings_applied.connect(self._apply_settings)
+            self._settings_dialog.theme_changed.connect(self._on_theme_changed)
         device_text = self._device_combo.currentText()
         device = device_text if not device_text.startswith("(") else None
         self._settings_dialog.set_device(device)
@@ -1401,6 +1506,13 @@ class MainWindow(QMainWindow):
         self._settings_dialog.show()
         self._settings_dialog.raise_()
         self._settings_dialog.activateWindow()
+
+    def _on_theme_changed(self, theme: str) -> None:
+        """Live preview/apply from the Settings dialog — restyle without
+        touching the rest of the settings pipeline."""
+        apply_theme(theme)
+        # Background pixmap for the empty-state overlay is theme-specific.
+        self._update_empty_overlay()
 
     def _apply_settings(self) -> None:
         apply_theme(self._settings.theme)

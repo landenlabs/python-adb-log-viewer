@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication
 
 # --- Modern Palette ---
@@ -26,6 +27,8 @@ QMainWindow, QDialog {{
     background-color: {L_BG_MAIN};
     color: {L_TEXT};
 }}
+QLabel, QCheckBox, QRadioButton, QGroupBox {{ color: {L_TEXT}; }}
+QGroupBox::title {{ color: {L_TEXT}; }}
 QToolBar {{
     background-color: {L_BG_ALT};
     border-bottom: 1px solid {L_BORDER};
@@ -38,6 +41,7 @@ QTableView {{
     gridline-color: {L_BORDER};
     selection-background-color: #c8e1ff;
     selection-color: {L_TEXT};
+    color: {L_TEXT};
     border: none;
 }}
 QHeaderView::section {{
@@ -53,8 +57,29 @@ QLineEdit {{
     border-radius: 4px;
     padding: 3px 8px;
     background: white;
+    color: {L_TEXT};
 }}
 QLineEdit:focus {{ border: 1px solid {L_ACCENT}; }}
+QComboBox {{
+    background-color: white;
+    border: 1px solid {L_BORDER};
+    border-radius: 4px;
+    padding: 2px 8px;
+    color: {L_TEXT};
+}}
+QComboBox QLineEdit {{
+    background: transparent;
+    border: none;
+    color: {L_TEXT};
+}}
+QComboBox QAbstractItemView {{
+    background-color: white;
+    color: {L_TEXT};
+    selection-background-color: #c8e1ff;
+    selection-color: {L_TEXT};
+    border: 1px solid {L_BORDER};
+    outline: none;
+}}
 QPushButton {{
     background-color: #f3f4f6;
     border: 1px solid {L_BORDER};
@@ -72,11 +97,29 @@ QPushButton:checked {{
 QStatusBar {{
     background-color: {L_BG_ALT};
     border-top: 1px solid {L_BORDER};
+    color: {L_TEXT};
 }}
+QStatusBar QLabel, QStatusBar QCheckBox {{ color: {L_TEXT}; }}
 #zoom_frame QPushButton {{
     padding: 2px 4px;
 }}
 QSplitter::handle {{ background-color: {L_BORDER}; }}
+QScrollArea {{ background-color: {L_BG_MAIN}; border: none; }}
+QScrollArea > QWidget > QWidget {{ background-color: {L_BG_MAIN}; }}
+QGroupBox {{
+    background-color: {L_BG_MAIN};
+    border: 1px solid {L_BORDER};
+    border-radius: 4px;
+    margin-top: 8px;
+    padding-top: 8px;
+}}
+QGroupBox::title {{
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    padding: 0 4px;
+    color: {L_TEXT};
+}}
+QFrame {{ background-color: transparent; }}
 QPushButton#collapsible_header {{
     text-align: left;
     font-weight: bold;
@@ -98,18 +141,23 @@ QMainWindow, QDialog {{
     background-color: {D_BG_MAIN};
     color: {D_TEXT};
 }}
+QLabel, QCheckBox, QRadioButton, QGroupBox {{ color: {D_TEXT}; }}
+QGroupBox::title {{ color: {D_TEXT_HI}; }}
 QToolBar {{
     background-color: {D_BG_ALT};
     border-bottom: 1px solid {D_BORDER};
     padding: 4px;
     spacing: 6px;
+    color: {D_TEXT};
 }}
+QToolBar QLabel {{ color: {D_TEXT}; }}
 QTableView {{
     background-color: {D_BG_DEEP};
     alternate-background-color: #252525;
     gridline-color: {D_BORDER};
     selection-background-color: #264f78;
     selection-color: {D_TEXT_HI};
+    color: {D_TEXT};
     border: none;
 }}
 QHeaderView::section {{
@@ -147,12 +195,31 @@ QComboBox {{
     border: 1px solid {D_BORDER};
     border-radius: 4px;
     padding: 2px 8px;
+    color: {D_TEXT_HI};
+}}
+QComboBox:editable {{
+    background-color: #3c3c3c;
+    color: {D_TEXT_HI};
+}}
+QComboBox QLineEdit {{
+    background: transparent;
+    border: none;
+    color: {D_TEXT_HI};
+}}
+QComboBox QAbstractItemView {{
+    background-color: #3c3c3c;
+    color: {D_TEXT_HI};
+    selection-background-color: #264f78;
+    selection-color: {D_TEXT_HI};
+    border: 1px solid {D_BORDER};
+    outline: none;
 }}
 QStatusBar {{
     background-color: {D_BG_ALT};
     border-top: 1px solid {D_BORDER};
-    color: #888888;
+    color: {D_TEXT};
 }}
+QStatusBar QLabel, QStatusBar QCheckBox {{ color: {D_TEXT}; }}
 #zoom_frame QPushButton {{
     padding: 2px 4px;
 }}
@@ -182,10 +249,74 @@ QScrollBar::handle:vertical {{
     margin: 2px;
 }}
 QScrollBar::handle:vertical:hover {{ background-color: #4f4f4f; }}
+QScrollArea {{ background-color: {D_BG_MAIN}; border: none; }}
+QScrollArea > QWidget > QWidget {{ background-color: {D_BG_MAIN}; }}
+QGroupBox {{
+    background-color: {D_BG_MAIN};
+    border: 1px solid {D_BORDER};
+    border-radius: 4px;
+    margin-top: 8px;
+    padding-top: 8px;
+    color: {D_TEXT};
+}}
+QGroupBox::title {{
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    padding: 0 4px;
+    color: {D_TEXT_HI};
+}}
+QFrame {{ background-color: transparent; }}
+QSpinBox, QDoubleSpinBox, QPlainTextEdit, QTextEdit {{
+    background-color: #3c3c3c;
+    color: {D_TEXT_HI};
+    border: 1px solid {D_BORDER};
+    border-radius: 4px;
+}}
+QToolTip {{
+    background-color: #3c3c3c;
+    color: {D_TEXT_HI};
+    border: 1px solid {D_BORDER};
+}}
 """
+
+
+def _dark_palette() -> QPalette:
+    p = QPalette()
+    p.setColor(QPalette.Window,          QColor(D_BG_MAIN))
+    p.setColor(QPalette.WindowText,      QColor(D_TEXT))
+    p.setColor(QPalette.Base,            QColor(D_BG_DEEP))
+    p.setColor(QPalette.AlternateBase,   QColor("#252525"))
+    p.setColor(QPalette.Text,            QColor(D_TEXT))
+    p.setColor(QPalette.Button,          QColor("#3a3a3a"))
+    p.setColor(QPalette.ButtonText,      QColor(D_TEXT))
+    p.setColor(QPalette.BrightText,      QColor(D_TEXT_HI))
+    p.setColor(QPalette.Highlight,       QColor("#264f78"))
+    p.setColor(QPalette.HighlightedText, QColor(D_TEXT_HI))
+    p.setColor(QPalette.ToolTipBase,     QColor("#3c3c3c"))
+    p.setColor(QPalette.ToolTipText,     QColor(D_TEXT_HI))
+    p.setColor(QPalette.PlaceholderText, QColor("#888888"))
+    p.setColor(QPalette.Disabled, QPalette.WindowText, QColor("#666666"))
+    p.setColor(QPalette.Disabled, QPalette.Text,       QColor("#666666"))
+    p.setColor(QPalette.Disabled, QPalette.ButtonText, QColor("#666666"))
+    return p
+
+
+def _light_palette() -> QPalette:
+    # Built from the system default so platform tweaks survive.
+    p = QApplication.style().standardPalette()
+    p.setColor(QPalette.Window,     QColor(L_BG_MAIN))
+    p.setColor(QPalette.WindowText, QColor(L_TEXT))
+    p.setColor(QPalette.Base,       QColor(L_BG_MAIN))
+    p.setColor(QPalette.Text,       QColor(L_TEXT))
+    return p
 
 
 def apply_theme(theme: str) -> None:
     app = QApplication.instance()
     app.setStyle("Fusion")
-    app.setStyleSheet(DARK_QSS if theme == "dark" else LIGHT_QSS)
+    if theme == "dark":
+        app.setPalette(_dark_palette())
+        app.setStyleSheet(DARK_QSS)
+    else:
+        app.setPalette(_light_palette())
+        app.setStyleSheet(LIGHT_QSS)
