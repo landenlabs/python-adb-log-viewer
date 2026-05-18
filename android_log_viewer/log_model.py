@@ -571,8 +571,29 @@ class LogFilterProxy(QSortFilterProxyModel):
 
     def set_pid_filter(self, pids: Set[str]) -> None:
         """Restrict to exact PID matches. Empty set = no restriction."""
+        was_active = bool(self._pid_set)
         self._pid_set = pids
         self.invalidateFilter()
+        if was_active != bool(pids):
+            # Refresh the PID column header so its active-filter marker updates.
+            self.headerDataChanged.emit(Qt.Horizontal, COL_PID, COL_PID)
+
+    def headerData(self, section: int, orientation: Qt.Orientation, role: int = Qt.DisplayRole):
+        if (
+            orientation == Qt.Horizontal
+            and role == Qt.DisplayRole
+            and section == COL_PID
+            and self._pid_set
+        ):
+            return "PID *"
+        if (
+            orientation == Qt.Horizontal
+            and role == Qt.ToolTipRole
+            and section == COL_PID
+            and self._pid_set
+        ):
+            return f"PID filter active ({len(self._pid_set)} PID{'s' if len(self._pid_set) != 1 else ''})"
+        return super().headerData(section, orientation, role)
 
     def set_tag_set_filter(self, tags: Set[str]) -> None:
         """Restrict to exact tag matches (from stats dialog). Empty set = no restriction."""
@@ -617,28 +638,34 @@ class LogFilterProxy(QSortFilterProxyModel):
     def _accepts_record(self, rec: "LogRecord") -> bool:
         if rec.level not in self._allowed:
             return False
-        if self._tag_rx and not self._tag_rx.search(rec.tag):
-            return False
-        if self._text_rx:
-            if not (self._text_rx.search(rec.message) or self._text_rx.search(rec.tag)):
+        # Bookmarks bypass tag/text/PID/tag-set/exclude filters so the user
+        # never loses a marker because of a narrow filter. Level and time
+        # range still apply.
+        is_bookmark = rec.level == "B"
+        if not is_bookmark:
+            if self._tag_rx and not self._tag_rx.search(rec.tag):
                 return False
-        if self._pid_set and rec.pid not in self._pid_set:
-            return False
-        if self._tag_set and rec.tag not in self._tag_set:
-            return False
+            if self._text_rx:
+                if not (self._text_rx.search(rec.message) or self._text_rx.search(rec.tag)):
+                    return False
+            if self._pid_set and rec.pid not in self._pid_set:
+                return False
+            if self._tag_set and rec.tag not in self._tag_set:
+                return False
         if self._time_from or self._time_to:
             ts_key = rec.timestamp[:17]
             if self._time_from and ts_key < self._time_from:
                 return False
             if self._time_to and ts_key > self._time_to:
                 return False
-        for pattern, field in self._exclude_rules:
-            if field == "PID" and pattern.search(rec.pid):
-                return False
-            elif field == "TAG" and pattern.search(rec.tag):
-                return False
-            elif field == "MESSAGE" and pattern.search(rec.message):
-                return False
+        if not is_bookmark:
+            for pattern, field in self._exclude_rules:
+                if field == "PID" and pattern.search(rec.pid):
+                    return False
+                elif field == "TAG" and pattern.search(rec.tag):
+                    return False
+                elif field == "MESSAGE" and pattern.search(rec.message):
+                    return False
         return True
 
     def accepts_for_timeline(self, rec: "LogRecord") -> bool:
@@ -647,6 +674,8 @@ class LogFilterProxy(QSortFilterProxyModel):
         between the range selection and the bars it contains."""
         if rec.level not in self._allowed:
             return False
+        if rec.level == "B":
+            return True
         if self._tag_rx and not self._tag_rx.search(rec.tag):
             return False
         if self._text_rx:

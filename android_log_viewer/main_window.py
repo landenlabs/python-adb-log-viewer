@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import List, Optional, Set
 
 from PySide6.QtCore import QEvent, QModelIndex, QPoint, QSize, QTimer, Qt
-from PySide6.QtGui import QAction, QKeySequence, QPixmap
+from PySide6.QtGui import QAction, QFontMetrics, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -54,6 +54,28 @@ _BASE_PT = _ZOOM_SIZES[_BASE_ZOOM_IDX]   # 9
 
 # Style for toolbar buttons whose companion dialog is currently open.
 _DIALOG_OPEN_STYLE = "color: #FFFFFF; background-color: #1565C0; font-weight: bold;"
+
+# Style for the collapsible filter-section toggles. The :checked state is the
+# expanded state; "active" property marks a section whose field has content.
+_SECTION_BUTTON_STYLE = """
+QPushButton {
+    text-align: left;
+    padding: 2px 6px;
+    color: black;
+    background: transparent;
+    border: 1px solid transparent;
+}
+QPushButton[active="true"] {
+    color: black;
+    font-weight: bold;
+}
+QPushButton:checked, QPushButton[active="true"]:checked {
+    color: white;
+    background-color: #1565C0;
+    border: 1px solid #1565C0;
+    font-weight: bold;
+}
+"""
 
 
 def _fmt_bytes(n: int) -> str:
@@ -142,6 +164,9 @@ class MainWindow(QMainWindow):
         effective_text = initial_text or self._settings.startup_text
         if effective_tag or effective_text:
             self._apply_initial_filters(effective_tag, effective_text)
+
+        self._auto_expand_filter_sections()
+        self._update_section_indicators()
 
         self._update_empty_overlay()
         QTimer.singleShot(0, self._check_adb_on_startup)
@@ -441,38 +466,79 @@ class MainWindow(QMainWindow):
         frame.setFrameShape(QFrame.StyledPanel)
         row = QHBoxLayout(frame)
         row.setContentsMargins(6, 3, 6, 3)
-        row.setSpacing(6)
+        row.setSpacing(4)
 
-        row.addWidget(QLabel("Level:"))
+        # ----- Level -----
+        self._lvl_toggle = self._make_section_toggle("Level")
+        row.addWidget(self._lvl_toggle)
+        self._lvl_container = QWidget()
+        lvl_l = QHBoxLayout(self._lvl_container)
+        lvl_l.setContentsMargins(0, 0, 0, 0)
+        lvl_l.setSpacing(4)
         self._level_cbs: dict[str, QCheckBox] = {}
         for lvl in LEVELS:
             cb = QCheckBox(lvl)
             cb.setChecked(lvl in self._settings.level_filters)
             cb.setToolTip(LEVEL_NAMES[lvl])
             self._level_cbs[lvl] = cb
-            row.addWidget(cb)
+            lvl_l.addWidget(cb)
+        row.addWidget(self._lvl_container)
+        self._wire_section_toggle(self._lvl_toggle, self._lvl_container, "Level")
 
-        row.addSpacing(12)
+        row.addSpacing(8)
 
-        row.addWidget(QLabel("Tag:"))
+        # ----- Tag -----
+        self._tag_toggle = self._make_section_toggle("Tag")
+        row.addWidget(self._tag_toggle)
         self._tag_edit = QLineEdit()
-        self._tag_edit.setPlaceholderText("regex…")
+        self._tag_edit.setPlaceholderText("Tag regex…")
         self._tag_edit.setClearButtonEnabled(True)
         self._tag_edit.setToolTip(
             "Filter by tag name (regex, case-insensitive).\n"
             "Shortcut: Ctrl+L"
         )
         row.addWidget(self._tag_edit, stretch=1)
+        self._wire_section_toggle(self._tag_toggle, self._tag_edit, "Tag")
 
-        row.addWidget(QLabel("Text:"))
+        # ----- Text -----
+        self._text_toggle = self._make_section_toggle("Text")
+        row.addWidget(self._text_toggle)
         self._text_edit = QLineEdit()
-        self._text_edit.setPlaceholderText("regex…")
+        self._text_edit.setPlaceholderText("Text regex…")
         self._text_edit.setClearButtonEnabled(True)
         self._text_edit.setToolTip(
             "Filter by message text or tag (regex, case-insensitive).\n"
             "Shortcut: Ctrl+F"
         )
         row.addWidget(self._text_edit, stretch=1)
+        self._wire_section_toggle(self._text_toggle, self._text_edit, "Text")
+
+        # ----- Search -----
+        self._search_toggle = self._make_section_toggle("Search")
+        row.addWidget(self._search_toggle)
+        self._search_container = QWidget()
+        sc_l = QHBoxLayout(self._search_container)
+        sc_l.setContentsMargins(0, 0, 0, 0)
+        sc_l.setSpacing(2)
+        self._search_edit = QLineEdit()
+        self._search_edit.setPlaceholderText("Search message (regex)…")
+        self._search_edit.setClearButtonEnabled(True)
+        self._search_edit.setToolTip(
+            "Search message text (regex, case-insensitive).\n"
+            "Enter / ▶: next match · Shift+Enter / ◀: previous match\n"
+            "Shortcut to focus: Ctrl+G"
+        )
+        sc_l.addWidget(self._search_edit, stretch=1)
+        self._btn_search_prev = QPushButton("◀")
+        self._btn_search_prev.setFixedWidth(28)
+        self._btn_search_prev.setToolTip("Previous match (Shift+Enter)")
+        sc_l.addWidget(self._btn_search_prev)
+        self._btn_search_next = QPushButton("▶")
+        self._btn_search_next.setFixedWidth(28)
+        self._btn_search_next.setToolTip("Next match (Enter)")
+        sc_l.addWidget(self._btn_search_next)
+        row.addWidget(self._search_container, stretch=1)
+        self._wire_section_toggle(self._search_toggle, self._search_container, "Search")
 
         self._btn_show_range = QPushButton("Show Range")
         self._btn_show_range.setToolTip(
@@ -492,6 +558,50 @@ class MainWindow(QMainWindow):
 
         return frame
 
+    # ============================================================ collapsible sections
+    def _make_section_toggle(self, label: str) -> QPushButton:
+        btn = QPushButton(f"▸ {label}")
+        btn.setCheckable(True)
+        btn.setCursor(Qt.PointingHandCursor)
+        # Buttons must not steal horizontal space from the input widgets.
+        btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+        btn.setStyleSheet(_SECTION_BUTTON_STYLE)
+        # Reserve room for the bold/expanded label so width doesn't jitter
+        # when the indicator or arrow swaps.
+        font = btn.font()
+        font.setBold(True)
+        fm = QFontMetrics(font)
+        btn.setFixedWidth(fm.horizontalAdvance(f"▾ {label}") + 18)
+        return btn
+
+    def _wire_section_toggle(self, btn: QPushButton, widget: QWidget, label: str) -> None:
+        def on_toggle(checked: bool) -> None:
+            btn.setText(f"{'▾' if checked else '▸'} {label}")
+            widget.setVisible(checked)
+            if checked:
+                # Move focus into the newly opened input for quick typing.
+                if isinstance(widget, QLineEdit):
+                    widget.setFocus()
+                else:
+                    focus_target = widget.findChild(QLineEdit)
+                    if focus_target:
+                        focus_target.setFocus()
+
+        btn.toggled.connect(on_toggle)
+        widget.setVisible(False)
+
+    def _auto_expand_filter_sections(self) -> None:
+        """Open any filter section whose field already has content at startup,
+        so the user can see what's active without hunting for a collapsed label."""
+        if not all(cb.isChecked() for cb in self._level_cbs.values()):
+            self._lvl_toggle.setChecked(True)
+        if self._tag_edit.text():
+            self._tag_toggle.setChecked(True)
+        if self._text_edit.text():
+            self._text_toggle.setChecked(True)
+        if self._search_edit.text():
+            self._search_toggle.setChecked(True)
+
     # ================================================================== wiring
     def _wire_signals(self) -> None:
         self._btn_refresh.clicked.connect(self._refresh_devices)
@@ -503,13 +613,22 @@ class MainWindow(QMainWindow):
 
         for cb in self._level_cbs.values():
             cb.toggled.connect(self._on_filter_changed)
+            cb.toggled.connect(self._update_section_indicators)
 
         self._tag_edit.textChanged.connect(self._proxy.set_tag_filter)
         self._tag_edit.textChanged.connect(self._update_status)
         self._tag_edit.textChanged.connect(self._schedule_timeline_filter_rebuild)
+        self._tag_edit.textChanged.connect(self._update_section_indicators)
         self._text_edit.textChanged.connect(self._proxy.set_text_filter)
         self._text_edit.textChanged.connect(self._update_status)
         self._text_edit.textChanged.connect(self._schedule_timeline_filter_rebuild)
+        self._text_edit.textChanged.connect(self._update_section_indicators)
+
+        # Search field — does not filter, just jumps to matches.
+        self._search_edit.returnPressed.connect(lambda: self._search_jump(forward=True))
+        self._search_edit.textChanged.connect(self._update_section_indicators)
+        self._btn_search_next.clicked.connect(lambda: self._search_jump(forward=True))
+        self._btn_search_prev.clicked.connect(lambda: self._search_jump(forward=False))
 
         self._proxy.rowsInserted.connect(self._on_proxy_rows_inserted)
         self._proxy.modelReset.connect(self._update_status)
@@ -559,6 +678,19 @@ class MainWindow(QMainWindow):
         text_focus.triggered.connect(self._text_edit.setFocus)
         self.addAction(text_focus)
 
+        search_focus = QAction("Focus search", self)
+        search_focus.setShortcut(QKeySequence("Ctrl+G"))
+        search_focus.triggered.connect(self._focus_search)
+        self.addAction(search_focus)
+
+        # Shift+Return in the search field walks backwards. QLineEdit eats
+        # plain Return for returnPressed; bind Shift+Return to the field
+        # itself so it only fires while it has focus.
+        search_prev_action = QAction("Search previous", self._search_edit)
+        search_prev_action.setShortcut(QKeySequence("Shift+Return"))
+        search_prev_action.triggered.connect(lambda: self._search_jump(forward=False))
+        self._search_edit.addAction(search_prev_action)
+
         copy_rows_action = QAction("Copy Selected Rows", self._table)
         copy_rows_action.setShortcut(QKeySequence("Ctrl+C"))
         copy_rows_action.triggered.connect(self._copy_selected_rows)
@@ -591,6 +723,112 @@ class MainWindow(QMainWindow):
         current = self._device_combo.currentText()
         if self._device_combo.count() == 1 and not current.startswith("("):
             QTimer.singleShot(0, lambda: self._btn_connect.setChecked(True))
+
+    # ================================================================== search
+    def _focus_search(self) -> None:
+        if not self._search_toggle.isChecked():
+            self._search_toggle.setChecked(True)
+        self._search_edit.setFocus()
+        self._search_edit.selectAll()
+
+    def _search_jump(self, forward: bool) -> None:
+        pattern = self._search_edit.text()
+        if not pattern:
+            return
+        try:
+            rx = _re.compile(pattern, _re.IGNORECASE)
+        except _re.error:
+            rx = _re.compile(_re.escape(pattern), _re.IGNORECASE)
+
+        rows = self._proxy.rowCount()
+        if rows == 0:
+            self.statusBar().showMessage("No rows to search.", 2000)
+            return
+
+        current = self._table.currentIndex().row()
+        if current < 0:
+            current = -1 if forward else rows
+        step = 1 if forward else -1
+
+        for offset in range(1, rows + 1):
+            r = (current + offset * step) % rows
+            rec: Optional[LogRecord] = self._proxy.data(
+                self._proxy.index(r, 0), Qt.UserRole
+            )
+            if rec is None:
+                continue
+            m = rx.search(rec.message)
+            if m:
+                # Disable autoscroll so we stay on the match.
+                if self._auto_scroll:
+                    self._chk_autoscroll.setChecked(False)
+                # Vertical scroll only — column 0 is at the left edge so this
+                # never forces a horizontal jump on its own.
+                self._table.scrollTo(
+                    self._proxy.index(r, 0), QTableView.PositionAtCenter
+                )
+                self._table.selectRow(r)
+                self._adjust_horizontal_for_match(rec.message, m.start(), m.end())
+                self.statusBar().showMessage(
+                    f"Match {r + 1} of {rows} visible rows", 2000
+                )
+                return
+
+        self.statusBar().showMessage(f"No matches for '{pattern}'", 2500)
+
+    def _adjust_horizontal_for_match(
+        self, message: str, match_start: int, match_end: int
+    ) -> None:
+        """Keep horizontal scroll at the left edge whenever possible.
+        Only shift right by the minimum needed to bring the match into view."""
+        hbar = self._table.horizontalScrollBar()
+        hbar.setValue(0)
+
+        fm = QFontMetrics(self._model._font)
+        pre_width = fm.horizontalAdvance(message[:match_start])
+        match_width = fm.horizontalAdvance(message[match_start:match_end])
+
+        hh = self._table.horizontalHeader()
+        # With hbar=0, this gives the column's offset from the viewport left.
+        msg_col_x = hh.sectionViewportPosition(COL_MSG)
+        # QStyledItemDelegate's default text margin (Qt uses 3-4 px in practice).
+        cell_text_pad = 4
+
+        match_left_vp = msg_col_x + cell_text_pad + pre_width
+        match_right_vp = match_left_vp + match_width
+        vp_width = self._table.viewport().width()
+        if vp_width <= 0:
+            return
+
+        # Match already visible — leave horizontal scroll at 0.
+        if match_right_vp <= vp_width:
+            return
+
+        # Off to the right: shift just enough so the match lands a bit inside
+        # the right edge, preserving as much left-side context as possible.
+        right_margin = 80
+        shift = match_right_vp - vp_width + right_margin
+        # Cap to scrollbar range so we don't try to scroll past content.
+        shift = min(shift, hbar.maximum())
+        hbar.setValue(shift)
+
+    def _update_section_indicators(self) -> None:
+        """Mark a section toggle "active" (bold) when its field has content,
+        so collapsed sections still hint that a filter/search is in play.
+        Color management lives entirely in _SECTION_BUTTON_STYLE: black when
+        collapsed, white-on-blue when expanded, regardless of active state."""
+        all_checked = all(cb.isChecked() for cb in self._level_cbs.values())
+        states = (
+            (self._lvl_toggle, not all_checked),
+            (self._tag_toggle, bool(self._tag_edit.text())),
+            (self._text_toggle, bool(self._text_edit.text())),
+            (self._search_toggle, bool(self._search_edit.text())),
+        )
+        for btn, is_active in states:
+            btn.setProperty("active", "true" if is_active else "false")
+            # Force the stylesheet engine to re-evaluate the property selector.
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
 
     # ================================================================== adb helpers
     def _adb_exe(self) -> str:
