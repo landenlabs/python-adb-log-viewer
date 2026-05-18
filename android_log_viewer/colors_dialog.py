@@ -16,11 +16,13 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFileDialog,
+    QFormLayout,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QMenu,
     QPushButton,
     QTableWidget,
@@ -188,6 +190,11 @@ class ColorsDialog(QDialog):
         self._scroll_layout.setContentsMargins(0, 0, 0, 0)
         self._scroll_layout.setSpacing(10)
 
+        # 0. Startup Patterns — applied to the Tag/Text filter on app launch
+        self._startup_box = CollapsibleBox("Startup Patterns")
+        self._startup_box.add_widget(self._build_startup_group())
+        self._scroll_layout.addWidget(self._startup_box)
+
         # 1. Level Colors
         self._level_box = CollapsibleBox("Log Level Colors")
         self._level_box.add_widget(self._build_level_group())
@@ -226,6 +233,35 @@ class ColorsDialog(QDialog):
 
         self._btn_save_profile.clicked.connect(self._save_profile)
         self._btn_load_profile.clicked.connect(self._load_profile)
+
+    # ------------------------------------------------------------------ startup patterns
+
+    def _build_startup_group(self) -> QWidget:
+        container = QWidget()
+        form = QFormLayout(container)
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setHorizontalSpacing(8)
+        form.setVerticalSpacing(4)
+
+        self._startup_tag_edit = QLineEdit()
+        self._startup_tag_edit.setPlaceholderText("regex applied to Tag filter on startup")
+        self._startup_tag_edit.setClearButtonEnabled(True)
+        form.addRow("Tag:", self._startup_tag_edit)
+
+        self._startup_text_edit = QLineEdit()
+        self._startup_text_edit.setPlaceholderText("regex applied to Text filter on startup")
+        self._startup_text_edit.setClearButtonEnabled(True)
+        form.addRow("Text:", self._startup_text_edit)
+
+        hint = QLabel(
+            "Applied to the Tag / Text filter when the app launches. "
+            "Saved with the color profile. CLI --tag / --text override these."
+        )
+        hint.setStyleSheet("color: #888; font-size: 10px;")
+        hint.setWordWrap(True)
+        form.addRow("", hint)
+
+        return container
 
     # ------------------------------------------------------------------ level colors
 
@@ -373,6 +409,9 @@ class ColorsDialog(QDialog):
         )
 
     def _load(self) -> None:
+        self._startup_tag_edit.setText(self._settings.startup_tag)
+        self._startup_text_edit.setText(self._settings.startup_text)
+
         for lvl, btn in self._level_fg_btns.items():
             btn.set_color(self._settings.level_fg.get(lvl, ""))
         for lvl, btn in self._level_bg_btns.items():
@@ -389,6 +428,9 @@ class ColorsDialog(QDialog):
         self._update_profile_label()
 
     def _on_apply(self) -> None:
+        self._settings.startup_tag = self._startup_tag_edit.text()
+        self._settings.startup_text = self._startup_text_edit.text()
+
         # Level colors
         for lvl, btn in self._level_fg_btns.items():
             self._settings.level_fg[lvl] = btn.color()
@@ -553,6 +595,8 @@ class ColorsDialog(QDialog):
         if not path.endswith(".json"):
             path += ".json"
         data = {
+            "startup_tag": self._startup_tag_edit.text(),
+            "startup_text": self._startup_text_edit.text(),
             "color_rules": [r.to_dict() for r in rules],
             "exclude_rules": [
                 {"pattern": r.pattern, "field": r.field, "enabled": r.enabled}
@@ -578,6 +622,13 @@ class ColorsDialog(QDialog):
             with open(path, "r", encoding="utf-8") as fh:
                 data = json.load(fh)
             
+            startup_tag = data.get("startup_tag", "")
+            startup_text = data.get("startup_text", "")
+            if not isinstance(startup_tag, str):
+                startup_tag = ""
+            if not isinstance(startup_text, str):
+                startup_text = ""
+
             color_rules = [
                 ColorRule.from_dict(r)
                 for r in data.get("color_rules", [])
@@ -596,6 +647,9 @@ class ColorsDialog(QDialog):
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.critical(self, "Load Error", str(exc))
             return
+
+        self._startup_tag_edit.setText(startup_tag)
+        self._startup_text_edit.setText(startup_text)
 
         self._rules_table.setRowCount(0)
         for rule in color_rules:

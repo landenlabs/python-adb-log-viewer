@@ -135,8 +135,7 @@ class PackagesDialog(QDialog):
     # ================================================================== lifecycle
     def showEvent(self, event) -> None:
         super().showEvent(event)
-        if not self._packages:
-            self._start_refresh()
+        self._start_refresh()
 
     def shutdown(self) -> None:
         reader = self._reader

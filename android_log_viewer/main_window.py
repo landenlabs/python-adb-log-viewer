@@ -137,8 +137,11 @@ class MainWindow(QMainWindow):
             16 if self._settings.compact_rows else 20
         )
 
-        if initial_tag or initial_text:
-            self._apply_initial_filters(initial_tag, initial_text)
+        # CLI args win; otherwise fall back to startup patterns saved in the color profile.
+        effective_tag = initial_tag or self._settings.startup_tag
+        effective_text = initial_text or self._settings.startup_text
+        if effective_tag or effective_text:
+            self._apply_initial_filters(effective_tag, effective_text)
 
         self._update_empty_overlay()
         QTimer.singleShot(0, self._check_adb_on_startup)
@@ -471,10 +474,6 @@ class MainWindow(QMainWindow):
         )
         row.addWidget(self._text_edit, stretch=1)
 
-        self._btn_clear_filters = QPushButton("✕ Filters")
-        self._btn_clear_filters.setToolTip("Reset all level, tag, and text filters")
-        row.addWidget(self._btn_clear_filters)
-
         self._btn_show_range = QPushButton("Show Range")
         self._btn_show_range.setToolTip(
             "Filter the log list to the selected time range\n"
@@ -500,7 +499,6 @@ class MainWindow(QMainWindow):
         self._btn_clear.clicked.connect(self._clear_logs)
         self._act_save.triggered.connect(self._save_logs)
         self._act_open.triggered.connect(self._open_logs)
-        self._btn_clear_filters.clicked.connect(self._clear_filters)
         self._chk_autoscroll.toggled.connect(self._on_autoscroll_toggled)
 
         for cb in self._level_cbs.values():
@@ -779,12 +777,6 @@ class MainWindow(QMainWindow):
         self._update_status()
         self._schedule_timeline_filter_rebuild()
 
-    def _clear_filters(self) -> None:
-        for cb in self._level_cbs.values():
-            cb.setChecked(True)
-        self._tag_edit.clear()
-        self._text_edit.clear()
-
     # ================================================================== timeline filter
     def _schedule_timeline_filter_rebuild(self) -> None:
         if not self._timeline_filter_timer.isActive():
@@ -922,7 +914,13 @@ class MainWindow(QMainWindow):
                 f"Copy {len(selected_rows)} selected rows",
                 self._copy_selected_rows,
             )
-        menu.addAction("Copy message", lambda: QApplication.clipboard().setText(rec.message))
+        if len(selected_rows) > 1:
+            menu.addAction(
+                f"Copy {len(selected_rows)} selected messages",
+                self._copy_selected_messages,
+            )
+        else:
+            menu.addAction("Copy message", lambda: QApplication.clipboard().setText(rec.message))
         menu.addSeparator()
         if rec.level == "B":
             menu.addAction(
@@ -966,6 +964,18 @@ class MainWindow(QMainWindow):
                     lines.append(
                         f"{rec.timestamp}  {rec.pid:>6}  {rec.tid:>6}  {rec.level}  {rec.tag}: {msg}"
                     )
+        if lines:
+            QApplication.clipboard().setText("\n".join(lines))
+
+    def _copy_selected_messages(self) -> None:
+        selected_rows = sorted({i.row() for i in self._table.selectedIndexes()})
+        lines = []
+        for row in selected_rows:
+            rec: Optional[LogRecord] = self._proxy.data(
+                self._proxy.index(row, 0), Qt.UserRole
+            )
+            if rec:
+                lines.append(rec.message)
         if lines:
             QApplication.clipboard().setText("\n".join(lines))
 

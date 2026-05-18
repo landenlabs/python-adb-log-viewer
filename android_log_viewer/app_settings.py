@@ -57,6 +57,8 @@ class AppSettings:
         self.timeline_follows_filter: bool = True
         self.compact_rows: bool = False
         self.adb_path: str = ""   # empty = use platform default (adb / adb.exe)
+        self.startup_tag: str = ""
+        self.startup_text: str = ""
 
     # ------------------------------------------------------------------ persistence
 
@@ -78,6 +80,8 @@ class AppSettings:
             "timeline_follows_filter": self.timeline_follows_filter,
             "compact_rows": self.compact_rows,
             "adb_path": self.adb_path,
+            "startup_tag": self.startup_tag,
+            "startup_text": self.startup_text,
         }
 
     def save(self) -> None:
@@ -128,6 +132,10 @@ class AppSettings:
             s.compact_rows = bool(data["compact_rows"])
         if "adb_path" in data and isinstance(data["adb_path"], str):
             s.adb_path = data["adb_path"]
+        if "startup_tag" in data and isinstance(data["startup_tag"], str):
+            s.startup_tag = data["startup_tag"]
+        if "startup_text" in data and isinstance(data["startup_text"], str):
+            s.startup_text = data["startup_text"]
         return s
 
     @classmethod
