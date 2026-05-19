@@ -64,6 +64,9 @@ class AppSettings:
         # Recently used filter patterns, newest first. Capped at RECENT_CAP.
         self.recent_tags: List[str] = []
         self.recent_texts: List[str] = []
+        # Live search-field highlight colors (applied to message-column matches).
+        self.search_fg: str = "#000000"
+        self.search_bg: str = "#FFEB3B"
 
     # ------------------------------------------------------------------ persistence
 
@@ -89,6 +92,8 @@ class AppSettings:
             "startup_text": self.startup_text,
             "recent_tags": self.recent_tags[:RECENT_CAP],
             "recent_texts": self.recent_texts[:RECENT_CAP],
+            "search_fg": self.search_fg,
+            "search_bg": self.search_bg,
         }
 
     def save(self) -> None:
@@ -147,6 +152,10 @@ class AppSettings:
             s.recent_tags = [str(x) for x in data["recent_tags"] if isinstance(x, str)][:RECENT_CAP]
         if "recent_texts" in data and isinstance(data["recent_texts"], list):
             s.recent_texts = [str(x) for x in data["recent_texts"] if isinstance(x, str)][:RECENT_CAP]
+        if "search_fg" in data and isinstance(data["search_fg"], str):
+            s.search_fg = data["search_fg"]
+        if "search_bg" in data and isinstance(data["search_bg"], str):
+            s.search_bg = data["search_bg"]
         return s
 
     @classmethod

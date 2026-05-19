@@ -730,6 +730,7 @@ class MainWindow(QMainWindow):
         # Search field — does not filter, just jumps to matches.
         self._search_edit.returnPressed.connect(lambda: self._search_jump(forward=True))
         self._search_edit.textChanged.connect(self._update_section_indicators)
+        self._search_edit.textChanged.connect(self._on_search_text_changed)
         self._btn_search_next.clicked.connect(lambda: self._search_jump(forward=True))
         self._btn_search_prev.clicked.connect(lambda: self._search_jump(forward=False))
 
@@ -914,6 +915,12 @@ class MainWindow(QMainWindow):
         # Cap to scrollbar range so we don't try to scroll past content.
         shift = min(shift, hbar.maximum())
         hbar.setValue(shift)
+
+    def _on_search_text_changed(self, text: str) -> None:
+        """Live-highlight matches of the search pattern in the message column."""
+        self._model.set_search_highlight(
+            text, self._settings.search_fg, self._settings.search_bg
+        )
 
     def _update_section_indicators(self) -> None:
         """Mark a section toggle "active" (bold) when its field has content,
@@ -1603,6 +1610,13 @@ class MainWindow(QMainWindow):
             self._settings.level_fg,
             self._settings.level_bg,
             self._settings.color_rules,
+        )
+        # Keep the live search highlight in sync with the (possibly changed)
+        # search-highlight colors from the Color Rules dialog.
+        self._model.set_search_highlight(
+            self._search_edit.text(),
+            self._settings.search_fg,
+            self._settings.search_bg,
         )
 
     # ================================================================== about dialog

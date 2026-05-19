@@ -3,8 +3,8 @@ from __future__ import annotations
 import subprocess
 from typing import List, Optional
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont
+from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtGui import QDesktopServices, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QAbstractScrollArea,
@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .app_settings import BUFFER_INFO, EXCLUDE_FIELDS, AppSettings, ExcludeRule
+from .app_settings import BUFFER_INFO, EXCLUDE_FIELDS, AppSettings, ExcludeRule, _settings_path
 from .colors_dialog import CollapsibleBox
 
 
@@ -92,7 +92,19 @@ class SettingsDialog(QDialog):
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         btns.accepted.connect(self._on_accept)
         btns.rejected.connect(self.hide)
-        root.addWidget(btns)
+
+        # Left-aligned helper button: opens the settings.json's folder in the
+        # platform file manager (Finder / Explorer / xdg).
+        btn_row = QHBoxLayout()
+        self._btn_open_settings_dir = QPushButton("Open Settings Folder")
+        self._btn_open_settings_dir.setToolTip(
+            f"Reveal the settings folder:\n{_settings_path().parent}"
+        )
+        self._btn_open_settings_dir.clicked.connect(self._open_settings_folder)
+        btn_row.addWidget(self._btn_open_settings_dir)
+        btn_row.addStretch()
+        btn_row.addWidget(btns)
+        root.addLayout(btn_row)
 
     # ------------------------------------------------------------------ appearance
 
@@ -308,6 +320,12 @@ class SettingsDialog(QDialog):
         self._rules_table.blockSignals(False)
 
         self._update_command_preview()
+
+    def _open_settings_folder(self) -> None:
+        """Reveal the directory that holds settings.json in the OS file manager."""
+        folder = _settings_path().parent
+        folder.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
 
     def _on_theme_combo_changed(self, text: str) -> None:
         """Apply theme the moment the user picks it — and persist, so closing

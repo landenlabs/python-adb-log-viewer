@@ -74,6 +74,13 @@ class LogModel(QAbstractTableModel):
         # mutations so find_row_for_row_id is O(1) regardless of insertion order
         # (bookmark rows can land anywhere, breaking the old monotonic invariant).
         self._row_id_index: dict[int, int] = {}
+        # Live search highlight (from the filter row's Search field). Computed
+        # on demand in data(HIGHLIGHT_ROLE) so new rows highlight automatically
+        # as they arrive — no cache invalidation needed when search text changes
+        # except for the visible-area dataChanged emit.
+        self._search_pattern: Optional[re.Pattern] = None
+        self._search_fg: Optional[str] = None
+        self._search_bg: Optional[str] = None
 
     # ------------------------------------------------------------------ Qt API
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
@@ -147,8 +154,6 @@ class LogModel(QAbstractTableModel):
         elif role == HIGHLIGHT_ROLE:
             if rec._cached_highlights is None:
                 rec._cached_highlights = {}
-            if col in rec._cached_highlights:
-                return rec._cached_highlights[col]
 
             if col == COL_TAG:
                 field_name, text = "TAG", rec.tag
@@ -157,18 +162,35 @@ class LogModel(QAbstractTableModel):
             else:
                 return None
 
-            spans: list[tuple[int, int, Optional[str], Optional[str]]] = []
-            for pat, field, fg, bg, entire_row in self._color_rules:
-                if entire_row or field != field_name:
-                    continue
-                if not fg and not bg:
-                    continue
-                for m in pat.finditer(text):
-                    spans.append((m.start(), m.end(), fg, bg))
+            if col not in rec._cached_highlights:
+                spans: list[tuple[int, int, Optional[str], Optional[str]]] = []
+                for pat, field, fg, bg, entire_row in self._color_rules:
+                    if entire_row or field != field_name:
+                        continue
+                    if not fg and not bg:
+                        continue
+                    for m in pat.finditer(text):
+                        spans.append((m.start(), m.end(), fg, bg))
+                rec._cached_highlights[col] = spans or None
 
-            res = spans or None
-            rec._cached_highlights[col] = res
-            return res
+            rule_spans = rec._cached_highlights[col]
+
+            # Live search highlight overlays the cached rule spans for the
+            # Message column. Computed on demand so changes to the search
+            # field don't require a cache wipe across every record.
+            if (
+                col == COL_MSG
+                and self._search_pattern is not None
+                and (self._search_fg or self._search_bg)
+            ):
+                search_spans = [
+                    (m.start(), m.end(), self._search_fg or None, self._search_bg or None)
+                    for m in self._search_pattern.finditer(rec.message)
+                ]
+                if search_spans:
+                    return (rule_spans or []) + search_spans
+
+            return rule_spans
 
         return None
 
@@ -234,6 +256,34 @@ class LogModel(QAbstractTableModel):
 
     def set_merge_enabled(self, enabled: bool) -> None:
         self._merge_enabled = enabled
+
+    def set_search_highlight(
+        self, pattern: str, fg: Optional[str], bg: Optional[str]
+    ) -> None:
+        """Apply a live search-text highlight to the Message column. Pass an
+        empty pattern to clear. Colors come from the pinned 'Search highlight'
+        row in the Color Rules dialog."""
+        if not pattern:
+            new_pat: Optional[re.Pattern] = None
+        else:
+            try:
+                new_pat = re.compile(pattern, re.IGNORECASE)
+            except re.error:
+                new_pat = re.compile(re.escape(pattern), re.IGNORECASE)
+        # Skip the dataChanged storm when nothing actually changed.
+        if (new_pat is None) == (self._search_pattern is None) \
+                and (new_pat.pattern if new_pat else "") \
+                    == (self._search_pattern.pattern if self._search_pattern else "") \
+                and fg == self._search_fg and bg == self._search_bg:
+            return
+        self._search_pattern = new_pat
+        self._search_fg = fg or None
+        self._search_bg = bg or None
+        rows = len(self._records)
+        if rows:
+            top = self.index(0, COL_MSG)
+            bottom = self.index(rows - 1, COL_MSG)
+            self.dataChanged.emit(top, bottom, [HIGHLIGHT_ROLE])
 
     # ------------------------------------------------------------------ write
     def append_records(self, records: List[LogRecord]) -> None:

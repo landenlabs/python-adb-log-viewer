@@ -151,6 +151,10 @@ class _ReorderableTable(QTableWidget):
         # Multi-row drag would need batched moves; keep it single-row for now.
         self.setSelectionMode(QAbstractItemView.SingleSelection)
         self.verticalHeader().setSectionsMovable(False)
+        # Number of rows pinned at the top that cannot be dragged or
+        # dropped onto. The host (ColorsDialog) sets this when it inserts
+        # the "Search highlight" row.
+        self.pinned_top = 0
 
     def dropEvent(self, event) -> None:
         if event.source() is not self:
@@ -161,6 +165,9 @@ class _ReorderableTable(QTableWidget):
             event.ignore()
             return
         src_row = sel[0].row()
+        if src_row < self.pinned_top:
+            event.ignore()
+            return
 
         # Resolve drop position to a target row index.
         pos = event.position().toPoint()
@@ -178,6 +185,8 @@ class _ReorderableTable(QTableWidget):
         # is preserved.
         if dest_row > src_row:
             dest_row -= 1
+        # Never let a draggable row land in (or above) the pinned area.
+        dest_row = max(self.pinned_top, dest_row)
 
         # Accept the event so Qt doesn't also try to perform its own move
         # (which would orphan our cell widgets), but only emit the signal
@@ -243,6 +252,10 @@ class ColorsDialog(QDialog):
         self.resize(850, 750)
         self.setModal(False)
         self._settings = settings
+        # Refs to the pinned "Search highlight" row's color buttons (set when
+        # _add_search_highlight_row runs during _load).
+        self._search_fg_btn: Optional[ColorButton] = None
+        self._search_bg_btn: Optional[ColorButton] = None
         self._build_ui()
         self._load()
 
@@ -504,6 +517,7 @@ class ColorsDialog(QDialog):
             btn.set_color(self._settings.level_bg.get(lvl, ""))
 
         self._rules_table.setRowCount(0)
+        self._add_search_highlight_row()
         for rule in self._settings.color_rules:
             self._add_rule_row(rule)
 
@@ -523,12 +537,96 @@ class ColorsDialog(QDialog):
         for lvl, btn in self._level_bg_btns.items():
             self._settings.level_bg[lvl] = btn.color()
 
+        # Pinned "Search highlight" row — its fg/bg live in dedicated
+        # settings keys rather than alongside the user-defined rules.
+        if self._search_fg_btn is not None:
+            self._settings.search_fg = self._search_fg_btn.color()
+        if self._search_bg_btn is not None:
+            self._settings.search_bg = self._search_bg_btn.color()
+
         self._settings.color_rules = self._collect_color_rules()
         self._settings.exclude_rules = self._collect_exclude_rules()
         self._settings.save()
         self.colors_applied.emit()
 
     # ================================================================== row helpers
+
+    def _add_search_highlight_row(self) -> None:
+        """Insert the pinned 'Search highlight' row at index 0.
+        Pattern/Field are read-only; only fg/bg are user-editable. Drag-drop
+        is blocked by ReorderableTable.pinned_top."""
+        self._rules_table.insertRow(0)
+        self._rules_table.pinned_top = 1
+
+        # Col 0: On — show a static glyph (no checkbox; highlight is implicit
+        # whenever the search field has text).
+        marker = QLabel("★")
+        marker.setAlignment(Qt.AlignCenter)
+        marker.setToolTip("Pinned: highlight colors for the filter row's Search field.")
+        self._rules_table.setCellWidget(0, 0, marker)
+
+        # Col 1: Pattern — read-only italic label.
+        pat = QTableWidgetItem("Search highlight")
+        pat_font = pat.font()
+        pat_font.setItalic(True)
+        pat.setFont(pat_font)
+        pat.setFlags(Qt.ItemIsEnabled)
+        pat.setToolTip(
+            "Live highlight colors for matches of the filter row's Search field.\n"
+            "Pattern comes from the Search field; only the foreground/background\n"
+            "colors are configured here."
+        )
+        self._rules_table.setItem(0, 1, pat)
+
+        # Col 2: Field — fixed to MESSAGE.
+        fld = QTableWidgetItem("MESSAGE")
+        fld.setFlags(Qt.ItemIsEnabled)
+        self._rules_table.setItem(0, 2, fld)
+
+        # Col 3: Foreground — bound to settings.search_fg
+        self._search_fg_btn = ColorButton(self._settings.search_fg)
+        self._search_fg_btn.color_changed.connect(
+            lambda _c: self._refresh_search_preview()
+        )
+        self._rules_table.setCellWidget(0, 3, self._search_fg_btn)
+
+        # Col 4: Background — bound to settings.search_bg
+        self._search_bg_btn = ColorButton(self._settings.search_bg)
+        self._search_bg_btn.color_changed.connect(
+            lambda _c: self._refresh_search_preview()
+        )
+        self._rules_table.setCellWidget(0, 4, self._search_bg_btn)
+
+        # Col 5: Row — empty placeholder (search is span-based, not row-based).
+        empty = QLabel("—")
+        empty.setAlignment(Qt.AlignCenter)
+        empty.setEnabled(False)
+        self._rules_table.setCellWidget(0, 5, empty)
+
+        # Mark the row in the vertical header.
+        hdr = QTableWidgetItem("★")
+        hdr.setToolTip("Pinned row — drag/delete are disabled.")
+        self._rules_table.setVerticalHeaderItem(0, hdr)
+
+        self._refresh_search_preview()
+
+    def _refresh_search_preview(self) -> None:
+        """Paint the pinned row's Pattern cell with its fg/bg as a preview."""
+        if self._rules_table.rowCount() < 1 or self._rules_table.pinned_top < 1:
+            return
+        pat = self._rules_table.item(0, 1)
+        if pat is None:
+            return
+        fg = self._search_fg_btn.color() if self._search_fg_btn else ""
+        bg = self._search_bg_btn.color() if self._search_bg_btn else ""
+        if fg:
+            pat.setForeground(QColor(fg))
+        else:
+            pat.setData(Qt.ForegroundRole, None)
+        if bg:
+            pat.setBackground(QColor(bg))
+        else:
+            pat.setData(Qt.BackgroundRole, None)
 
     def _add_rule_row(self, rule: Optional[ColorRule] = None) -> None:
         row = self._rules_table.rowCount()
@@ -604,9 +702,10 @@ class ColorsDialog(QDialog):
     # ---------- drag-drop reorder ----------
     def _snapshot_color_rules(self) -> List[ColorRule]:
         """Capture every row's data verbatim, including blank-pattern rows,
-        so a reorder doesn't drop in-progress entries."""
+        so a reorder doesn't drop in-progress entries. Skips the pinned
+        search-highlight row."""
         rules: List[ColorRule] = []
-        for row in range(self._rules_table.rowCount()):
+        for row in range(self._rules_table.pinned_top, self._rules_table.rowCount()):
             pat = self._rules_table.item(row, 1)
             combo: Optional[QComboBox] = self._rules_table.cellWidget(row, 2)
             fg_btn: Optional[ColorButton] = self._rules_table.cellWidget(row, 3)
@@ -622,13 +721,19 @@ class ColorsDialog(QDialog):
         return rules
 
     def _on_rule_row_moved(self, src: int, dest: int) -> None:
+        # src/dest are absolute row indices in the table; convert to indices
+        # into the rule list (which doesn't include the pinned row).
+        pin = self._rules_table.pinned_top
         rules = self._snapshot_color_rules()
-        if not (0 <= src < len(rules)) or not (0 <= dest < len(rules)):
+        src_i = src - pin
+        dest_i = dest - pin
+        if not (0 <= src_i < len(rules)) or not (0 <= dest_i < len(rules)):
             return
-        rule = rules.pop(src)
-        rules.insert(dest, rule)
+        rule = rules.pop(src_i)
+        rules.insert(dest_i, rule)
         # Rebuild from scratch — Qt would otherwise leave cell widgets behind.
         self._rules_table.setRowCount(0)
+        self._add_search_highlight_row()
         for r in rules:
             self._add_rule_row(r)
         self._rules_table.selectRow(dest)
@@ -663,8 +768,9 @@ class ColorsDialog(QDialog):
                 return
 
     def _delete_selected_rules(self) -> None:
+        pin = self._rules_table.pinned_top
         rows = sorted(
-            {idx.row() for idx in self._rules_table.selectedIndexes()},
+            {idx.row() for idx in self._rules_table.selectedIndexes() if idx.row() >= pin},
             reverse=True,
         )
         for row in rows:
@@ -680,7 +786,7 @@ class ColorsDialog(QDialog):
 
     def _collect_color_rules(self) -> List[ColorRule]:
         rules: List[ColorRule] = []
-        for row in range(self._rules_table.rowCount()):
+        for row in range(self._rules_table.pinned_top, self._rules_table.rowCount()):
             pat = self._rules_table.item(row, 1)
             combo: Optional[QComboBox] = self._rules_table.cellWidget(row, 2)
             fg_btn: Optional[ColorButton] = self._rules_table.cellWidget(row, 3)
@@ -795,6 +901,7 @@ class ColorsDialog(QDialog):
         self._startup_text_edit.setText(startup_text)
 
         self._rules_table.setRowCount(0)
+        self._add_search_highlight_row()
         for rule in color_rules:
             self._add_rule_row(rule)
 
