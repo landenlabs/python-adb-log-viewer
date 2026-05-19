@@ -35,7 +35,7 @@ from .colors_dialog import ColorsDialog
 from .constants import LEVEL_NAMES, LEVELS, MAX_RECORDS, PRUNE_SIZE
 from .database import LogDatabase
 from .filter_view_dialog import FilterViewDialog
-from .log_model import COL_MSG, COL_TAG, HighlightDelegate, LogFilterProxy, LogModel
+from .log_model import COL_LEVEL, COL_MSG, COL_PID, COL_TAG, HighlightDelegate, LogFilterProxy, LogModel
 from .log_record import LogRecord
 from .about_dialog import AboutDialog
 from .bookmarks_dialog import BookmarksDialog
@@ -274,6 +274,9 @@ class MainWindow(QMainWindow):
         hh = self._table.horizontalHeader()
         hh.setStretchLastSection(False)
         hh.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        hh.setSectionsClickable(True)
+        hh.setCursor(Qt.PointingHandCursor)
+        hh.sectionClicked.connect(self._on_log_header_clicked)
         hh.resizeSection(0, 180)  # timestamp
         hh.resizeSection(1, 60)   # pid
         hh.resizeSection(2, 60)   # tid
@@ -1549,6 +1552,30 @@ class MainWindow(QMainWindow):
         else:
             self._btn_settings.setText("Settings")
             self._btn_settings.setStyleSheet("")
+
+    # ================================================================== header clicks
+    def _on_log_header_clicked(self, section: int) -> None:
+        if section == COL_PID:
+            self._open_stats_dialog_focus("pid")
+        elif section == COL_TAG:
+            self._open_stats_dialog_focus("tag")
+        elif section == COL_LEVEL:
+            if not self._lvl_toggle.isChecked():
+                self._lvl_toggle.setChecked(True)
+
+    def _open_stats_dialog_focus(self, which: str) -> None:
+        """Open the Stats dialog (or raise it if already open) and focus PID/Tag table."""
+        already_visible = (
+            self._stats_dialog is not None and self._stats_dialog.isVisible()
+        )
+        if not already_visible:
+            self._show_stats_dialog()
+        else:
+            self._stats_dialog.raise_()
+            self._stats_dialog.activateWindow()
+        target = getattr(self._stats_dialog, f"_{which}_table", None)
+        if target is not None:
+            target.setFocus()
 
     # ================================================================== stats dialog
     def _show_stats_dialog(self) -> None:

@@ -39,6 +39,18 @@ class BookmarksDialog(QDialog):
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(6)
 
+        desc = QLabel(
+            "Bookmarks add a visual divider in the log and let you jump back to a "
+            "position. Toggle on the selected row with <b>Ctrl+B</b> or via the log "
+            "right-click menu. Bookmarks bypass Tag, Message, PID, and Exclude "
+            "filters (Level and time range still apply). The bookmark color is set "
+            "in the <b>Colors</b> dialog."
+        )
+        desc.setWordWrap(True)
+        desc.setTextFormat(Qt.RichText)
+        desc.setStyleSheet("color: gray;")
+        root.addWidget(desc)
+
         self._lbl_count = QLabel("0 bookmarks")
         root.addWidget(self._lbl_count)
 
