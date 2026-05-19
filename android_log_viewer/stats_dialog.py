@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .icons import app_icon
 from .ps_reader import PsReader
 from .stats import StatsTracker
 
@@ -64,6 +65,7 @@ class StatsDialog(QDialog):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Log Statistics")
+        self.setWindowIcon(app_icon("stats"))
         self.resize(1100, 540)
         self.setModal(False)
 

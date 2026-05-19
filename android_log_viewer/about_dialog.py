@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .icons import app_icon
 from .resources import resource_path
 from .version import __version__
 
@@ -58,6 +59,7 @@ class AboutDialog(QDialog):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("About Android Log Viewer")
+        self.setWindowIcon(app_icon("about"))
         self.setModal(True)
         self.setFixedWidth(_DIALOG_WIDTH)
 

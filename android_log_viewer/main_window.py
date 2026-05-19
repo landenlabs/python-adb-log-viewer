@@ -35,6 +35,7 @@ from .colors_dialog import ColorsDialog
 from .constants import LEVEL_NAMES, LEVELS, MAX_RECORDS, PRUNE_SIZE
 from .database import LogDatabase
 from .filter_view_dialog import FilterViewDialog
+from .icons import app_icon
 from .log_model import COL_LEVEL, COL_MSG, COL_PID, COL_TAG, HighlightDelegate, LogFilterProxy, LogModel
 from .log_record import LogRecord
 from .about_dialog import AboutDialog
@@ -382,8 +383,9 @@ class MainWindow(QMainWindow):
         self.addToolBar(tb)
 
         self._btn_connect = QPushButton("Connect")
+        self._btn_connect.setIcon(app_icon("connect"))
         self._btn_connect.setCheckable(True)
-        self._btn_connect.setMinimumWidth(80)
+        self._btn_connect.setMinimumWidth(90)
         self._btn_connect.setToolTip("Start/Stop streaming logs")
         tb.addWidget(self._btn_connect)
 
@@ -393,7 +395,8 @@ class MainWindow(QMainWindow):
         self._device_combo.setMinimumWidth(140)
         tb.addWidget(self._device_combo)
 
-        self._btn_refresh = QPushButton("⟳")
+        self._btn_refresh = QPushButton()
+        self._btn_refresh.setIcon(app_icon("refresh"))
         self._btn_refresh.setFixedWidth(32)
         self._btn_refresh.setToolTip("Refresh device list")
         tb.addWidget(self._btn_refresh)
@@ -411,6 +414,7 @@ class MainWindow(QMainWindow):
         tb.addWidget(self._btn_record)
 
         self._btn_clear = QPushButton("Clear")
+        self._btn_clear.setIcon(app_icon("clear"))
         self._btn_clear.setToolTip("Clear logs and device buffer")
         tb.addWidget(self._btn_clear)
 
@@ -419,19 +423,21 @@ class MainWindow(QMainWindow):
         # File / Tools menu actions — created here, placed on the menu bar by
         # _build_menu_bar(). Stats / Save still respond to setText() so their
         # dynamic-label code keeps working.
-        self._act_save = QAction("Save…", self)
-        self._act_open = QAction("Open…", self)
-        self._act_stats = QAction("Stats", self)
-        self._act_memory = QAction("Mem", self)
-        self._act_network = QAction("Net", self)
-        self._act_packages = QAction("Pkgs", self)
+        self._act_save = QAction(app_icon("save"), "Save…", self)
+        self._act_open = QAction(app_icon("open"), "Open…", self)
+        self._act_stats = QAction(app_icon("stats"), "Stats", self)
+        self._act_memory = QAction(app_icon("memory"), "Mem", self)
+        self._act_network = QAction(app_icon("network"), "Net", self)
+        self._act_packages = QAction(app_icon("packages"), "Pkgs", self)
         self._act_packages.setToolTip("List installed 3rd-party packages")
 
         self._btn_filter_view = QPushButton("View")
+        self._btn_filter_view.setIcon(app_icon("view"))
         self._btn_filter_view.setToolTip("Open a second filtered log view")
         tb.addWidget(self._btn_filter_view)
 
         self._btn_bookmarks = QPushButton("Bookmarks")
+        self._btn_bookmarks.setIcon(app_icon("bookmarks"))
         self._btn_bookmarks.setToolTip(
             "Manage bookmarks (Ctrl+B to toggle bookmark on current row)"
         )
@@ -448,8 +454,10 @@ class MainWindow(QMainWindow):
         _spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         tb.addWidget(_spacer)
 
-        self._btn_about = QPushButton("?")
+        self._btn_about = QPushButton()
+        self._btn_about.setIcon(app_icon("about"))
         self._btn_about.setFixedWidth(32)
+        self._btn_about.setToolTip("About")
         tb.addWidget(self._btn_about)
 
         # keyboard shortcuts

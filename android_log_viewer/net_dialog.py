@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .icons import app_icon
 from .net_reader import NetReader
 
 COL_IFACE    = 0
@@ -124,6 +125,7 @@ class NetDialog(QDialog):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Network Monitor")
+        self.setWindowIcon(app_icon("network"))
         self.resize(860, 420)
         self.setModal(False)
 

@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .icons import app_icon
 from .log_model import make_mono_font
 from .packages_reader import PackagesReader
 
@@ -44,6 +45,7 @@ class PackagesDialog(QDialog):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Packages")
+        self.setWindowIcon(app_icon("packages"))
         self.resize(720, 540)
         self.setModal(False)
 

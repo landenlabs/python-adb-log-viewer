@@ -5,6 +5,7 @@ from typing import Optional
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QDialog,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -14,6 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .icons import app_icon
 from .log_model import LogFilterProxy, LogModel
 from .log_record import LogRecord
 
@@ -31,27 +33,48 @@ class BookmarksDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Bookmarks")
-        self.resize(720, 480)
+        self.setWindowIcon(app_icon("bookmarks"))
+        self.resize(380, 480)
         self._model = model
         self._proxy = proxy
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(8, 8, 8, 8)
-        root.setSpacing(6)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(10)
 
         desc = QLabel(
             "Bookmarks add a visual divider in the log and let you jump back to a "
             "position. Toggle on the selected row with <b>Ctrl+B</b> or via the log "
-            "right-click menu. Bookmarks bypass Tag, Message, PID, and Exclude "
-            "filters (Level and time range still apply). The bookmark color is set "
-            "in the <b>Colors</b> dialog."
+            "right-click menu. Bookmarks bypass <b>Tag</b>, <b>Message</b>, "
+            "<b>PID</b>, and <b>Exclude</b> filters — Level and time range still "
+            "apply. The bookmark color is set in the <b>Colors</b> dialog."
         )
         desc.setWordWrap(True)
         desc.setTextFormat(Qt.RichText)
-        desc.setStyleSheet("color: gray;")
+        desc.setObjectName("BookmarksDesc")
+        desc.setStyleSheet(
+            "QLabel#BookmarksDesc {"
+            "  color: palette(text);"
+            "  background-color: palette(alternate-base);"
+            "  border: 1px solid palette(mid);"
+            "  border-radius: 4px;"
+            "  padding: 8px 10px;"
+            "  font-size: 11px;"
+            "}"
+        )
         root.addWidget(desc)
 
+        divider = QFrame()
+        divider.setFrameShape(QFrame.HLine)
+        divider.setFrameShadow(QFrame.Plain)
+        divider.setFixedHeight(1)
+        divider.setStyleSheet("background-color: palette(mid); border: none;")
+        root.addWidget(divider)
+
         self._lbl_count = QLabel("0 bookmarks")
+        count_font = self._lbl_count.font()
+        count_font.setBold(True)
+        self._lbl_count.setFont(count_font)
         root.addWidget(self._lbl_count)
 
         self._list = QListWidget()

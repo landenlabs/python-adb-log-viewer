@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 
 from .app_settings import AppSettings
 from .constants import LEVEL_NAMES, LEVELS
+from .icons import app_icon
 from .log_model import COL_MSG, COL_TAG, HighlightDelegate, LogFilterProxy, LogModel
 from .log_record import LogRecord
 from .timeline_widget import TimelineWidget
@@ -40,6 +41,7 @@ class FilterViewDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Filter View")
+        self.setWindowIcon(app_icon("view"))
         self.resize(1200, 700)
         self.setWindowFlags(
             self.windowFlags()

@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .icons import app_icon
 from .mem_reader import MemReader
 
 # Column indices
@@ -101,6 +102,7 @@ class MemDialog(QDialog):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Memory Monitor")
+        self.setWindowIcon(app_icon("memory"))
         self.resize(740, 580)
         self.setModal(False)
 
