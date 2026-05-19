@@ -495,6 +495,7 @@ class MainWindow(QMainWindow):
             cb.setChecked(lvl in self._settings.level_filters)
             cb.setToolTip(LEVEL_NAMES[lvl])
             self._level_cbs[lvl] = cb
+            self._style_level_checkbox(cb, lvl)
             lvl_l.addWidget(cb)
         row.addWidget(self._lvl_container)
         self._wire_section_toggle(self._lvl_toggle, self._lvl_container, "Level")
@@ -577,6 +578,26 @@ class MainWindow(QMainWindow):
         return frame
 
     # ============================================================ collapsible sections
+    def _style_level_checkbox(self, cb: QCheckBox, lvl: str) -> None:
+        """Paint the checkbox chip in the level's foreground/background colors
+        from settings. Called on build and re-applied when Colors dialog changes."""
+        fg = self._settings.level_fg.get(lvl, "")
+        bg = self._settings.level_bg.get(lvl, "")
+        if not fg and not bg:
+            cb.setStyleSheet("")
+            return
+        parts = ["padding: 1px 5px;", "border-radius: 3px;", "font-weight: bold;"]
+        if bg:
+            parts.append(f"background-color: {bg};")
+            parts.append(f"border: 1px solid {bg};")
+        if fg:
+            parts.append(f"color: {fg};")
+        cb.setStyleSheet("QCheckBox { " + " ".join(parts) + " }")
+
+    def _refresh_level_checkbox_colors(self) -> None:
+        for lvl, cb in self._level_cbs.items():
+            self._style_level_checkbox(cb, lvl)
+
     def _make_section_toggle(self, label: str) -> QPushButton:
         btn = QPushButton(f"▸ {label}")
         btn.setCheckable(True)
@@ -1653,6 +1674,7 @@ class MainWindow(QMainWindow):
             self._settings.search_fg,
             self._settings.search_bg,
         )
+        self._refresh_level_checkbox_colors()
 
     # ================================================================== about dialog
     def _show_about_dialog(self) -> None:
