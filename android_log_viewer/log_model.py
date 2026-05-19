@@ -171,7 +171,7 @@ class LogModel(QAbstractTableModel):
                         continue
                     for m in pat.finditer(text):
                         spans.append((m.start(), m.end(), fg, bg))
-                rec._cached_highlights[col] = spans or None
+                rec._cached_highlights[col] = self._merge_spans(spans) or None
 
             rule_spans = rec._cached_highlights[col]
 
@@ -188,11 +188,51 @@ class LogModel(QAbstractTableModel):
                     for m in self._search_pattern.finditer(rec.message)
                 ]
                 if search_spans:
-                    return (rule_spans or []) + search_spans
+                    # Search spans have highest priority, so they 'paint' over rule spans
+                    return self._merge_spans((rule_spans or []) + search_spans)
 
             return rule_spans
 
         return None
+
+    @staticmethod
+    def _merge_spans(
+        spans: List[Tuple[int, int, Optional[str], Optional[str]]]
+    ) -> List[Tuple[int, int, Optional[str], Optional[str]]]:
+        """Resolve overlapping spans using a 'last one wins' priority. Returns
+        a sorted list of non-overlapping spans."""
+        if not spans:
+            return []
+
+        # Find all boundary points
+        points = set()
+        for s, e, _, _ in spans:
+            points.add(s)
+            points.add(e)
+        sorted_points = sorted(list(points))
+
+        result = []
+        for i in range(len(sorted_points) - 1):
+            start, end = sorted_points[i], sorted_points[i + 1]
+            # Find the LAST span that covers this interval
+            winner = None
+            for s, e, fg, bg in spans:
+                if s <= start and e >= end:
+                    winner = (fg, bg)
+
+            if winner:
+                fg, bg = winner
+                # Merge with previous if color is identical and they are contiguous
+                if (
+                    result
+                    and result[-1][1] == start
+                    and result[-1][2] == fg
+                    and result[-1][3] == bg
+                ):
+                    result[-1] = (result[-1][0], end, fg, bg)
+                else:
+                    result.append((start, end, fg, bg))
+        return result
 
     def set_font_size(self, pt: int) -> None:
         self._font = make_mono_font(pt)
