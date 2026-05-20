@@ -42,6 +42,8 @@ jobs:
           ${{ matrix.version_flag }}
           --add-data "log-viewer.png${{ matrix.data_sep }}."
           --add-data "landen_labs_about_400.gif${{ matrix.data_sep }}."
+          --add-data "bg-dark.jpg${{ matrix.data_sep }}."
+          --add-data "bg-light.jpg${{ matrix.data_sep }}."
           main.py
 
       - name: Upload artifact
