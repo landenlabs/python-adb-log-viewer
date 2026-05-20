@@ -525,7 +525,7 @@ class MainWindow(QMainWindow):
             ),
             recent=self._settings.recent_tags,
         )
-        row.addWidget(self._tag_edit, stretch=1)
+        row.addWidget(self._tag_edit, stretch=100)
         self._wire_section_toggle(self._tag_toggle, self._tag_edit, "Tag")
 
         # ----- Message -----
@@ -540,7 +540,7 @@ class MainWindow(QMainWindow):
             ),
             recent=self._settings.recent_texts,
         )
-        row.addWidget(self._text_edit, stretch=1)
+        row.addWidget(self._text_edit, stretch=100)
         self._wire_section_toggle(self._text_toggle, self._text_edit, "Message")
 
         # ----- Search -----
@@ -567,7 +567,7 @@ class MainWindow(QMainWindow):
         self._btn_search_next.setFixedWidth(28)
         self._btn_search_next.setToolTip("Next match (Enter)")
         sc_l.addWidget(self._btn_search_next)
-        row.addWidget(self._search_container, stretch=1)
+        row.addWidget(self._search_container, stretch=100)
         self._wire_section_toggle(self._search_toggle, self._search_container, "Search")
 
         self._btn_show_range = QPushButton("Show Range")
@@ -586,10 +586,11 @@ class MainWindow(QMainWindow):
         self._btn_clear_range.setVisible(False)
         row.addWidget(self._btn_clear_range)
 
-        # Trailing stretch absorbs leftover horizontal space when sections
-        # without a stretching edit (e.g. only Level expanded) are open, so
-        # the visible toggles stay left-aligned instead of getting padded
-        # outwards to fill the row.
+        # Trailing stretch absorbs leftover space when only Level is open.
+        # Weight 1 vs the edit fields' weight 100 means: when Tag/Message/
+        # Search are open they take nearly all the space (as before the
+        # stretch was added), but when none are open this stretch still
+        # consumes the row so toggles stay left-aligned.
         row.addStretch(1)
 
         return frame
