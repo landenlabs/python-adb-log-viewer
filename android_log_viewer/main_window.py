@@ -62,16 +62,19 @@ _DIALOG_OPEN_STYLE = "color: #FFFFFF; background-color: #1565C0; font-weight: bo
 # `color` is omitted on the un-checked rules so the theme stylesheet
 # (QPushButton color) supplies it — dark text in light mode, light in dark.
 _SECTION_BUTTON_STYLE = """
-QPushButton {
+QPushButton#section_toggle {
     text-align: left;
     padding: 2px 6px;
-    background: transparent;
+    background-color: transparent;
     border: 1px solid transparent;
+    border-radius: 0;
+    font-weight: normal;
 }
-QPushButton[active="true"] {
+QPushButton#section_toggle[active="true"] {
     font-weight: bold;
 }
-QPushButton:checked, QPushButton[active="true"]:checked {
+QPushButton#section_toggle:checked,
+QPushButton#section_toggle[active="true"]:checked {
     color: white;
     background-color: #1565C0;
     border: 1px solid #1565C0;
@@ -486,6 +489,10 @@ class MainWindow(QMainWindow):
         self._lvl_toggle = self._make_section_toggle("Level")
         row.addWidget(self._lvl_toggle)
         self._lvl_container = QWidget()
+        # Container must not grow horizontally or it steals space from the
+        # filter edit fields (visible on Windows where checkbox chips render
+        # wider than on macOS).
+        self._lvl_container.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
         lvl_l = QHBoxLayout(self._lvl_container)
         lvl_l.setContentsMargins(0, 0, 0, 0)
         lvl_l.setSpacing(4)
@@ -494,6 +501,10 @@ class MainWindow(QMainWindow):
             cb = QCheckBox(lvl)
             cb.setChecked(lvl in self._settings.level_filters)
             cb.setToolTip(LEVEL_NAMES[lvl])
+            # Fixed size policy prevents the chip from growing with the row;
+            # the chip's own sizeHint (indicator + text + chip padding from
+            # the stylesheet) determines its actual width.
+            cb.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
             self._level_cbs[lvl] = cb
             self._style_level_checkbox(cb, lvl)
             lvl_l.addWidget(cb)
@@ -575,6 +586,12 @@ class MainWindow(QMainWindow):
         self._btn_clear_range.setVisible(False)
         row.addWidget(self._btn_clear_range)
 
+        # Trailing stretch absorbs leftover horizontal space when sections
+        # without a stretching edit (e.g. only Level expanded) are open, so
+        # the visible toggles stay left-aligned instead of getting padded
+        # outwards to fill the row.
+        row.addStretch(1)
+
         return frame
 
     # ============================================================ collapsible sections
@@ -600,17 +617,19 @@ class MainWindow(QMainWindow):
 
     def _make_section_toggle(self, label: str) -> QPushButton:
         btn = QPushButton(f"▸ {label}")
+        # Object name lets the section QSS use #section_toggle, which has
+        # higher specificity than the theme's bare `QPushButton` rule
+        # (themes.py) and so its gray fill + 4x12 padding don't bleed through.
+        btn.setObjectName("section_toggle")
         btn.setCheckable(True)
         btn.setCursor(Qt.PointingHandCursor)
+        btn.setFlat(True)
         # Buttons must not steal horizontal space from the input widgets.
         btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
         btn.setStyleSheet(_SECTION_BUTTON_STYLE)
-        # Reserve room for the bold/expanded label so width doesn't jitter
-        # when the indicator or arrow swaps.
-        font = btn.font()
-        font.setBold(True)
-        fm = QFontMetrics(font)
-        btn.setFixedWidth(fm.horizontalAdvance(f"▾ {label}") + 18)
+        # Size to the actual (non-bold) label width.
+        fm = QFontMetrics(btn.font())
+        btn.setFixedWidth(fm.horizontalAdvance(f"▾ {label}") + 14)
         return btn
 
     def _wire_section_toggle(self, btn: QPushButton, widget: QWidget, label: str) -> None:
