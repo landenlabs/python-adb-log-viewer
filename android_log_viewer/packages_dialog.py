@@ -128,7 +128,7 @@ class PackagesDialog(QDialog):
         root.addWidget(self._table, stretch=1)
 
         # ---- status ----
-        self._lbl_status = QLabel("Not yet refreshed")
+        self._lbl_status = QLabel("Loading packages…")
         self._lbl_status.setStyleSheet("color: gray; font-size: 11px;")
         root.addWidget(self._lbl_status)
 
@@ -162,6 +162,8 @@ class PackagesDialog(QDialog):
             return
         self._btn_refresh.setEnabled(False)
         self._btn_refresh.setText("Loading…")
+        self._lbl_status.setText("Loading packages…")
+        self._lbl_status.setStyleSheet("color: gray; font-size: 11px;")
         self._reader = PackagesReader(
             device=self._device, adb_exe=self._adb_exe, parent=self
         )
