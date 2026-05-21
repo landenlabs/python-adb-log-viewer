@@ -136,7 +136,8 @@ class StatsDialog(QDialog):
         self._btn_close.clicked.connect(self.hide)
 
     def _build_pid_panel(self) -> QWidget:
-        grp = QGroupBox("PIDs  –  top 100 by message count")
+        self._pid_group = QGroupBox("PIDs  –  top 200 by message count")
+        grp = self._pid_group
         layout = QVBoxLayout(grp)
         layout.setContentsMargins(4, 8, 4, 4)
 
@@ -173,7 +174,8 @@ class StatsDialog(QDialog):
         return grp
 
     def _build_tag_panel(self) -> QWidget:
-        grp = QGroupBox("Tags  –  top 100 by message count")
+        self._tag_group = QGroupBox("Tags  –  top 200 by message count")
+        grp = self._tag_group
         layout = QVBoxLayout(grp)
         layout.setContentsMargins(4, 8, 4, 4)
 
@@ -210,6 +212,8 @@ class StatsDialog(QDialog):
     def refresh(self, tracker: StatsTracker) -> None:
         """Repopulate both tables from the latest snapshot. Preserves selection."""
         self._tracker = tracker
+        self._pid_group.setTitle(f"PIDs  –  top {tracker.top_n} by message count")
+        self._tag_group.setTitle(f"Tags  –  top {tracker.top_n} by message count")
         self._populate_pid_table(tracker.pid_stats())
         self._populate_tag_table(tracker.tag_stats())
 

@@ -64,6 +64,7 @@ class LogModel(QAbstractTableModel):
         super().__init__(parent)
         self._records: List[LogRecord] = []
         self._merge_enabled: bool = False
+        self._max_records: int = MAX_RECORDS
         self._font = make_mono_font(9)
         # Color config — initialised from constants, updated via set_color_config()
         self._level_fg: dict[str, QColor] = dict(LEVEL_FG)
@@ -297,6 +298,9 @@ class LogModel(QAbstractTableModel):
     def set_merge_enabled(self, enabled: bool) -> None:
         self._merge_enabled = enabled
 
+    def set_max_records(self, max_records: int) -> None:
+        self._max_records = max_records
+
     def set_search_highlight(
         self, pattern: str, fg: Optional[str], bg: Optional[str]
     ) -> None:
@@ -336,10 +340,10 @@ class LogModel(QAbstractTableModel):
         if not records:
             return
 
-        # Cap memory growth: if we're about to exceed MAX_RECORDS,
+        # Cap memory growth: if we're about to exceed the configured max,
         # prune the oldest records plus a buffer to avoid pruning on every batch.
-        if len(self._records) + len(records) > MAX_RECORDS:
-            to_remove = (len(self._records) + len(records) - MAX_RECORDS) + PRUNE_SIZE
+        if len(self._records) + len(records) > self._max_records:
+            to_remove = (len(self._records) + len(records) - self._max_records) + PRUNE_SIZE
             self.prune_oldest(to_remove)
 
         first = len(self._records)

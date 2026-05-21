@@ -24,12 +24,13 @@ class _Stat:
 class StatsTracker:
     """
     Incrementally tracks per-PID and per-Tag message counts and time ranges.
-    Only the TOP_N most-frequent entries are retained in the returned snapshots.
+    Only the top_n most-frequent entries are retained in the returned snapshots.
     """
 
-    TOP_N = 100
+    DEFAULT_TOP_N = 200
 
-    def __init__(self) -> None:
+    def __init__(self, top_n: int = DEFAULT_TOP_N) -> None:
+        self.top_n = top_n
         self._pids: Dict[str, _Stat] = {}
         self._tags: Dict[str, _Stat] = {}
 
@@ -50,10 +51,10 @@ class StatsTracker:
 
     def pid_stats(self) -> List[Tuple[str, int, str, str]]:
         """[(pid, count, first_ts, last_ts), ...] sorted by count desc, top N."""
-        items = sorted(self._pids.items(), key=lambda x: -x[1].count)[: self.TOP_N]
+        items = sorted(self._pids.items(), key=lambda x: -x[1].count)[: self.top_n]
         return [(pid, s.count, s.first, s.last) for pid, s in items]
 
     def tag_stats(self) -> List[Tuple[str, int, str, str]]:
         """[(tag, count, first_ts, last_ts), ...] sorted by count desc, top N."""
-        items = sorted(self._tags.items(), key=lambda x: -x[1].count)[: self.TOP_N]
+        items = sorted(self._tags.items(), key=lambda x: -x[1].count)[: self.top_n]
         return [(tag, s.count, s.first, s.last) for tag, s in items]

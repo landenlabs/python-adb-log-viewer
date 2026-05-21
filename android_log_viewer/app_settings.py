@@ -22,6 +22,16 @@ EXCLUDE_FIELDS = ("PID", "TAG", "MESSAGE")
 
 RECENT_CAP = 20
 
+# Limits — defaults and valid ranges for the user-configurable limits in
+# Settings > Limits.
+DEFAULT_STATS_TOP_N = 200
+STATS_TOP_N_MIN = 10
+STATS_TOP_N_MAX = 500
+
+DEFAULT_MAX_RECORDS = 100_000
+MAX_RECORDS_MIN = 1_000
+MAX_RECORDS_MAX = 200_000
+
 
 @dataclass
 class ExcludeRule:
@@ -67,6 +77,9 @@ class AppSettings:
         # Live search-field highlight colors (applied to message-column matches).
         self.search_fg: str = "#000000"
         self.search_bg: str = "#FFEB3B"
+        # Limits
+        self.stats_top_n: int = DEFAULT_STATS_TOP_N
+        self.max_records: int = DEFAULT_MAX_RECORDS
 
     # ------------------------------------------------------------------ persistence
 
@@ -94,6 +107,8 @@ class AppSettings:
             "recent_texts": self.recent_texts[:RECENT_CAP],
             "search_fg": self.search_fg,
             "search_bg": self.search_bg,
+            "stats_top_n": self.stats_top_n,
+            "max_records": self.max_records,
         }
 
     def save(self) -> None:
@@ -156,6 +171,16 @@ class AppSettings:
             s.search_fg = data["search_fg"]
         if "search_bg" in data and isinstance(data["search_bg"], str):
             s.search_bg = data["search_bg"]
+        if "stats_top_n" in data:
+            try:
+                s.stats_top_n = max(STATS_TOP_N_MIN, min(STATS_TOP_N_MAX, int(data["stats_top_n"])))
+            except (TypeError, ValueError):
+                pass
+        if "max_records" in data:
+            try:
+                s.max_records = max(MAX_RECORDS_MIN, min(MAX_RECORDS_MAX, int(data["max_records"])))
+            except (TypeError, ValueError):
+                pass
         return s
 
     @classmethod

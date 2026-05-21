@@ -112,7 +112,8 @@ class MainWindow(QMainWindow):
         self._proxy.setSourceModel(self._model)
 
         self._settings = AppSettings.load()
-        self._stats = StatsTracker()
+        self._model.set_max_records(self._settings.max_records)
+        self._stats = StatsTracker(top_n=self._settings.stats_top_n)
         self._stats_dialog: Optional[StatsDialog] = None
         self._settings_dialog: Optional[SettingsDialog] = None
         self._mem_dialog: Optional[MemDialog] = None
@@ -1133,8 +1134,9 @@ class MainWindow(QMainWindow):
 
             # Maintain DB record limit
             count = self._db.count()
-            if count > MAX_RECORDS:
-                self._db.prune_oldest(count - MAX_RECORDS + PRUNE_SIZE)
+            max_records = self._settings.max_records
+            if count > max_records:
+                self._db.prune_oldest(count - max_records + PRUNE_SIZE)
 
     def _on_records_ready(self, records: List[LogRecord]) -> None:
         # Assign sequential IDs
@@ -1577,6 +1579,10 @@ class MainWindow(QMainWindow):
         apply_theme(self._settings.theme)
         self._proxy.set_exclude_rules(self._settings.exclude_rules)
         self._model.set_merge_enabled(self._settings.merge_same_time_tag)
+        self._model.set_max_records(self._settings.max_records)
+        self._stats.top_n = self._settings.stats_top_n
+        if self._stats_dialog and self._stats_dialog.isVisible():
+            self._stats_dialog.refresh(self._stats)
         self._table.verticalHeader().setDefaultSectionSize(
             16 if self._settings.compact_rows else 20
         )

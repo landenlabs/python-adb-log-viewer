@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFileDialog,
+    QFormLayout,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -21,13 +22,24 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QScrollArea,
+    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
-from .app_settings import BUFFER_INFO, EXCLUDE_FIELDS, AppSettings, ExcludeRule, _settings_path
+from .app_settings import (
+    BUFFER_INFO,
+    EXCLUDE_FIELDS,
+    MAX_RECORDS_MAX,
+    MAX_RECORDS_MIN,
+    STATS_TOP_N_MAX,
+    STATS_TOP_N_MIN,
+    AppSettings,
+    ExcludeRule,
+    _settings_path,
+)
 from .colors_dialog import CollapsibleBox
 
 
@@ -84,6 +96,11 @@ class SettingsDialog(QDialog):
         )
         self._rules_box.add_widget(self._build_rules_content())
         scroll_layout.addWidget(self._rules_box)
+
+        self._limits_box = CollapsibleBox("Limits")
+        self._limits_box.add_widget(self._build_limits_content())
+        self._limits_box.toggle()  # start collapsed
+        scroll_layout.addWidget(self._limits_box)
 
         scroll_layout.addStretch()
         scroll.setWidget(scroll_content)
@@ -291,6 +308,36 @@ class SettingsDialog(QDialog):
 
         return container
 
+    # ------------------------------------------------------------------ limits
+
+    def _build_limits_content(self) -> QWidget:
+        container = QWidget()
+        form = QFormLayout(container)
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setHorizontalSpacing(10)
+        form.setVerticalSpacing(8)
+
+        self._stats_top_n_spin = QSpinBox()
+        self._stats_top_n_spin.setRange(STATS_TOP_N_MIN, STATS_TOP_N_MAX)
+        self._stats_top_n_spin.setSingleStep(10)
+        self._stats_top_n_spin.setToolTip(
+            f"Maximum number of PIDs / Tags shown in the Log Statistics dialog.\n"
+            f"Range: {STATS_TOP_N_MIN}–{STATS_TOP_N_MAX}."
+        )
+        form.addRow("Statistics top N:", self._stats_top_n_spin)
+
+        self._max_records_spin = QSpinBox()
+        self._max_records_spin.setRange(MAX_RECORDS_MIN, MAX_RECORDS_MAX)
+        self._max_records_spin.setSingleStep(1000)
+        self._max_records_spin.setGroupSeparatorShown(True)
+        self._max_records_spin.setToolTip(
+            f"Maximum log records kept in memory / database before the\n"
+            f"oldest entries are pruned. Range: {MAX_RECORDS_MIN:,}–{MAX_RECORDS_MAX:,}."
+        )
+        form.addRow("Main scroller limit:", self._max_records_spin)
+
+        return container
+
     # ================================================================== load / save
 
     def _load(self) -> None:
@@ -318,6 +365,9 @@ class SettingsDialog(QDialog):
         for rule in self._settings.exclude_rules:
             self._add_row(rule.pattern, rule.field, rule.enabled)
         self._rules_table.blockSignals(False)
+
+        self._stats_top_n_spin.setValue(self._settings.stats_top_n)
+        self._max_records_spin.setValue(self._settings.max_records)
 
         self._update_command_preview()
 
@@ -347,6 +397,8 @@ class SettingsDialog(QDialog):
         chosen = {name for name, cb in self._buffer_cbs.items() if cb.isChecked()}
         self._settings.buffers = chosen if chosen else {"main"}
         self._settings.exclude_rules = self._collect_rules()
+        self._settings.stats_top_n = self._stats_top_n_spin.value()
+        self._settings.max_records = self._max_records_spin.value()
         self._adb_error_banner.setVisible(False)
         self.settings_applied.emit()
         self.hide()
