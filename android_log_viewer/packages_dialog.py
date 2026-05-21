@@ -22,10 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from .icons import app_icon
-from .log_model import make_mono_font
 from .packages_reader import PackagesReader
-
-_MONO = make_mono_font(10)
 
 COL_PACKAGE = 0
 
@@ -122,7 +119,6 @@ class PackagesDialog(QDialog):
         self._table.verticalHeader().setDefaultSectionSize(22)
         self._table.setShowGrid(False)
         self._table.setSortingEnabled(True)
-        self._table.setFont(_MONO)
         self._table.horizontalHeader().setSectionResizeMode(COL_PACKAGE, QHeaderView.Stretch)
         self._table.itemSelectionChanged.connect(self._update_button_state)
         root.addWidget(self._table, stretch=1)

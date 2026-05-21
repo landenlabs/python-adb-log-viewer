@@ -8,7 +8,6 @@ from typing import Any, Dict, List, Optional
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor
 
-from .log_model import make_mono_font
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -39,8 +38,6 @@ COL_TX_DELTA = 6
 _DELTA_ACTIVE = QColor("#1565C0")   # blue  — traffic accumulated since grab
 _DELTA_ZERO   = QColor("#9E9E9E")   # gray  — no change since grab
 _RATE_ACTIVE  = QColor("#2E7D32")   # green — non-zero rate
-
-_MONO = make_mono_font(10)
 
 _INTERVALS = [("2 s", 2_000), ("5 s", 5_000), ("10 s", 10_000), ("30 s", 30_000)]
 _DEFAULT_IDX = 1   # 5 s
@@ -244,7 +241,6 @@ class NetDialog(QDialog):
         self._table.setShowGrid(False)
         self._table.setSortingEnabled(True)
         self._table.horizontalHeader().setSortIndicatorShown(True)
-        self._table.setFont(_MONO)
 
         hh = self._table.horizontalHeader()
         hh.setSectionResizeMode(COL_IFACE,    QHeaderView.Stretch)
