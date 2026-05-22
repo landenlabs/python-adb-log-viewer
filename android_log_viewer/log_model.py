@@ -34,6 +34,9 @@ COL_TIME, COL_PID, COL_TID, COL_LEVEL, COL_TAG, COL_MSG = range(6)
 # Custom role: returns list of (start, end, fg_hex, bg_hex) for partial-text highlighting
 HIGHLIGHT_ROLE = Qt.UserRole + 3
 
+# Background applied to rows flagged as crash matches by the CrashesDialog.
+CRASH_HIGHLIGHT_BG = "#FFCDD2"
+
 # Compiled color rule entry: (pattern, field, fg_or_None, bg_or_None, entire_row)
 _CompiledRule = Tuple[re.Pattern, str, Optional[str], Optional[str], bool]
 
@@ -129,6 +132,8 @@ class LogModel(QAbstractTableModel):
                 if pat.search(target):
                     res = QColor(bg)
                     break
+            if rec.is_crash:
+                res = QColor(CRASH_HIGHLIGHT_BG)
             rec._cached_bg = res
             return res
 
@@ -294,6 +299,19 @@ class LogModel(QAbstractTableModel):
                 bottom,
                 [Qt.BackgroundRole, Qt.ForegroundRole, HIGHLIGHT_ROLE],
             )
+
+    def iter_records(self) -> List[LogRecord]:
+        return self._records
+
+    def repaint_crash_rows(self) -> None:
+        """Invalidate cached colors and repaint after is_crash flags change."""
+        for rec in self._records:
+            rec._cached_bg = None
+        rows = len(self._records)
+        if rows:
+            top = self.index(0, 0)
+            bottom = self.index(rows - 1, self.columnCount() - 1)
+            self.dataChanged.emit(top, bottom, [Qt.BackgroundRole])
 
     def set_merge_enabled(self, enabled: bool) -> None:
         self._merge_enabled = enabled

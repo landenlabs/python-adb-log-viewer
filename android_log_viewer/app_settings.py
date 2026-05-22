@@ -81,6 +81,18 @@ class AppSettings:
         # Limits
         self.stats_top_n: int = DEFAULT_STATS_TOP_N
         self.max_records: int = DEFAULT_MAX_RECORDS
+        # Index into MainWindow._ZOOM_SIZES; the default base index is applied
+        # by MainWindow if not provided in settings.
+        self.zoom_idx: int = -1
+        # Crash detection.
+        # Start regex begins a pending trace on match; follow regex matches the
+        # 2nd and following messages with identical (Time, PID, TID, Level).
+        # A pending trace is promoted to the visible crash list once it has
+        # at least crash_min_count records.
+        self.crash_capture_enabled: bool = True
+        self.crash_start_regex: str = r"CrashReporter|java\.lang\.[A-Za-z]+Exception"
+        self.crash_follow_regex: str = r"[ ]*at +"
+        self.crash_min_count: int = 2
 
     # ------------------------------------------------------------------ persistence
 
@@ -111,6 +123,11 @@ class AppSettings:
             "search_bg": self.search_bg,
             "stats_top_n": self.stats_top_n,
             "max_records": self.max_records,
+            "zoom_idx": self.zoom_idx,
+            "crash_capture_enabled": self.crash_capture_enabled,
+            "crash_start_regex": self.crash_start_regex,
+            "crash_follow_regex": self.crash_follow_regex,
+            "crash_min_count": self.crash_min_count,
         }
 
     def save(self) -> None:
@@ -183,6 +200,25 @@ class AppSettings:
         if "max_records" in data:
             try:
                 s.max_records = max(MAX_RECORDS_MIN, min(MAX_RECORDS_MAX, int(data["max_records"])))
+            except (TypeError, ValueError):
+                pass
+        if "zoom_idx" in data:
+            try:
+                s.zoom_idx = int(data["zoom_idx"])
+            except (TypeError, ValueError):
+                pass
+        if "crash_capture_enabled" in data:
+            s.crash_capture_enabled = bool(data["crash_capture_enabled"])
+        # Legacy single-field migration → use as start regex.
+        if "crash_regex" in data and isinstance(data["crash_regex"], str):
+            s.crash_start_regex = data["crash_regex"]
+        if "crash_start_regex" in data and isinstance(data["crash_start_regex"], str):
+            s.crash_start_regex = data["crash_start_regex"]
+        if "crash_follow_regex" in data and isinstance(data["crash_follow_regex"], str):
+            s.crash_follow_regex = data["crash_follow_regex"]
+        if "crash_min_count" in data:
+            try:
+                s.crash_min_count = max(1, int(data["crash_min_count"]))
             except (TypeError, ValueError):
                 pass
         return s

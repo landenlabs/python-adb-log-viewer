@@ -27,3 +27,6 @@ class LogRecord:
     sub_messages: Optional[list] = field(default=None, repr=False)  # all lines on head record
     _parent_rec: Optional["LogRecord"] = field(default=None, repr=False)
     _expanded: bool = field(default=False, repr=False)
+
+    # Crash detection (not persisted) — set by CrashesDialog regex match
+    is_crash: bool = field(default=False, repr=False)

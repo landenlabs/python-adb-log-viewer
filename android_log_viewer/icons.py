@@ -28,6 +28,7 @@ _ICON_MAP: Dict[str, QStyle.StandardPixmap] = {
     "packages":  QStyle.SP_DirIcon,
     "view":      QStyle.SP_FileDialogContentsView,
     "bookmarks": QStyle.SP_DialogApplyButton,
+    "crashes":   QStyle.SP_MessageBoxCritical,
     "about":     QStyle.SP_MessageBoxQuestion,
 }
 

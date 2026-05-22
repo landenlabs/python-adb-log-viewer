@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import List, Optional, Set
 
 from PySide6.QtCore import QEvent, QModelIndex, QPoint, QSize, QTimer, Qt
-from PySide6.QtGui import QAction, QFontMetrics, QKeySequence, QPixmap
+from PySide6.QtGui import QAction, QColor, QFont, QFontMetrics, QIcon, QKeySequence, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -40,6 +40,7 @@ from .log_model import COL_LEVEL, COL_MSG, COL_PID, COL_TAG, HighlightDelegate, 
 from .log_record import LogRecord
 from .about_dialog import AboutDialog
 from .bookmarks_dialog import BookmarksDialog
+from .crashes_dialog import CrashesDialog
 from .mem_dialog import MemDialog
 from .net_dialog import NetDialog
 from .packages_dialog import PackagesDialog
@@ -122,10 +123,11 @@ class MainWindow(QMainWindow):
         self._colors_dialog: Optional[ColorsDialog] = None
         self._filter_view: Optional[FilterViewDialog] = None
         self._bookmarks_dialog: Optional[BookmarksDialog] = None
+        self._crashes_dialog: Optional[CrashesDialog] = None
         self._selected_range: Optional[tuple] = None   # (from_key, to_key) or None
         self._range_filter_active: bool = False
 
-        self._zoom_idx: int = _BASE_ZOOM_IDX   # current index into _ZOOM_SIZES
+        self._zoom_idx: int = _BASE_ZOOM_IDX   # current index into _ZOOM_SIZES (overridden from settings below)
         self._recording: bool = False           # whether incoming rows go to the DB
 
         # Throttle stats-dialog auto-refresh to at most once per 2 s
@@ -153,6 +155,11 @@ class MainWindow(QMainWindow):
 
         # Apply loaded settings immediately so the proxy and button labels
         # reflect saved state without requiring the user to open the dialog.
+        # Level checkboxes were set in _build_ui before signals were wired,
+        # so push their state into the proxy explicitly here — without this,
+        # the proxy stays at its all-levels default and _has_active_timeline_filter
+        # returns False at startup, leaving the timeline unfiltered.
+        self._proxy.set_levels(set(self._settings.level_filters))
         self._proxy.set_exclude_rules(self._settings.exclude_rules)
         self._model.set_merge_enabled(self._settings.merge_same_time_tag)
         self._update_settings_button_label()
@@ -166,6 +173,12 @@ class MainWindow(QMainWindow):
         )
         self._apply_wrap_mode()
 
+        # Restore saved zoom level (clamped to the valid index range).
+        saved_zoom = self._settings.zoom_idx
+        if 0 <= saved_zoom < len(_ZOOM_SIZES):
+            self._zoom_idx = saved_zoom
+        self._set_font_size(_ZOOM_SIZES[self._zoom_idx])
+
         # CLI args win; otherwise fall back to startup patterns saved in the color profile.
         effective_tag = initial_tag or self._settings.startup_tag
         effective_text = initial_text or self._settings.startup_text
@@ -174,6 +187,11 @@ class MainWindow(QMainWindow):
 
         self._auto_expand_filter_sections()
         self._update_section_indicators()
+        # Initialise the timeline's filtered-bucket tracking now so that the
+        # first batch of incoming records is added to the filtered view, not
+        # only the master buckets. Without this, restored level filters leave
+        # the timeline showing everything until the user re-edits a filter.
+        self._rebuild_timeline_filter()
 
         self._update_empty_overlay()
         QTimer.singleShot(0, self._check_adb_on_startup)
@@ -363,6 +381,16 @@ class MainWindow(QMainWindow):
         self._btn_zoom_in.setToolTip("Zoom in  (Ctrl+)")
         zl.addWidget(self._btn_zoom_in)
 
+        # Filter-timeline checkbox — left-anchored on the status bar
+        self._chk_filter_timeline = QCheckBox("Filter timeline")
+        self._chk_filter_timeline.setChecked(self._settings.timeline_follows_filter)
+        self._chk_filter_timeline.setToolTip(
+            "When on, the timeline shows only events visible in the main viewer\n"
+            "(level, tag, and message filters applied).\n"
+            "When off, the timeline shows all events."
+        )
+        sb.addWidget(self._chk_filter_timeline)
+
         # Time range label — left side of status bar (non-permanent, left-aligned)
         self._lbl_time_range = QLabel()
         self._lbl_time_range.setStyleSheet(
@@ -448,6 +476,15 @@ class MainWindow(QMainWindow):
             "Manage bookmarks (Ctrl+B to toggle bookmark on current row)"
         )
         tb.addWidget(self._btn_bookmarks)
+
+        self._btn_crashes = QPushButton("Crashes")
+        self._btn_crashes.setIcon(app_icon("crashes"))
+        self._btn_crashes.setIconSize(QSize(22, 22))
+        self._btn_crashes.setToolTip(
+            "Detect and list crash traces by regex. The icon shows a badge "
+            "with the number of detected traces."
+        )
+        tb.addWidget(self._btn_crashes)
 
         self._btn_colors = QPushButton("Colors")
         tb.addWidget(self._btn_colors)
@@ -563,11 +600,11 @@ class MainWindow(QMainWindow):
         )
         sc_l.addWidget(self._search_edit, stretch=1)
         self._btn_search_prev = QPushButton("◀")
-        self._btn_search_prev.setFixedWidth(28)
+        self._btn_search_prev.setFixedWidth(40)
         self._btn_search_prev.setToolTip("Previous match (Shift+Enter)")
         sc_l.addWidget(self._btn_search_prev)
         self._btn_search_next = QPushButton("▶")
-        self._btn_search_next.setFixedWidth(28)
+        self._btn_search_next.setFixedWidth(40)
         self._btn_search_next.setToolTip("Next match (Enter)")
         sc_l.addWidget(self._btn_search_next)
         row.addWidget(self._search_container, stretch=100)
@@ -752,6 +789,7 @@ class MainWindow(QMainWindow):
         self._act_save.triggered.connect(self._save_logs)
         self._act_open.triggered.connect(self._open_logs)
         self._chk_autoscroll.toggled.connect(self._on_autoscroll_toggled)
+        self._chk_filter_timeline.toggled.connect(self._on_filter_timeline_toggled)
 
         for cb in self._level_cbs.values():
             cb.toggled.connect(self._on_filter_changed)
@@ -808,6 +846,7 @@ class MainWindow(QMainWindow):
         self._act_packages.triggered.connect(self._show_packages_dialog)
         self._btn_filter_view.clicked.connect(self._show_filter_view)
         self._btn_bookmarks.clicked.connect(self._show_bookmarks_dialog)
+        self._btn_crashes.clicked.connect(self._show_crashes_dialog)
         self._btn_settings.clicked.connect(self._show_settings_dialog)
         self._btn_colors.clicked.connect(self._show_colors_dialog)
         self._btn_about.clicked.connect(self._show_about_dialog)
@@ -1046,6 +1085,13 @@ class MainWindow(QMainWindow):
                 vh.resizeSection(i, row_h)
         pct = round(100 * pt / _BASE_PT)
         self._lbl_zoom.setText(f"{pct}%")
+        # Persist the zoom level so it survives restart.
+        if self._settings.zoom_idx != self._zoom_idx:
+            self._settings.zoom_idx = self._zoom_idx
+            try:
+                self._settings.save()
+            except Exception:
+                pass
 
     def _apply_wrap_mode(self) -> None:
         """Apply current wrap_messages setting to the log table.
@@ -1175,6 +1221,8 @@ class MainWindow(QMainWindow):
             rec.row_id = self._next_row_id
             self._next_row_id += 1
 
+        self._feed_records_to_crashes(records)
+
         # --- UI path: update immediately on every emission ---
         self._model.append_records(records)
         self._timeline.add_records(records)
@@ -1241,6 +1289,14 @@ class MainWindow(QMainWindow):
     # ================================================================== scroll
     def _on_autoscroll_toggled(self, checked: bool) -> None:
         self._auto_scroll = checked
+
+    def _on_filter_timeline_toggled(self, checked: bool) -> None:
+        self._settings.timeline_follows_filter = bool(checked)
+        try:
+            self._settings.save()
+        except Exception:
+            pass
+        self._rebuild_timeline_filter()
 
     def _on_manual_scroll(self) -> None:
         sb = self._table.verticalScrollBar()
@@ -1443,6 +1499,9 @@ class MainWindow(QMainWindow):
         self._db_buffer.clear()
         self._model.clear()
         self._refresh_bookmarks_dialog_if_visible()
+        if self._crashes_dialog is not None:
+            self._crashes_dialog.reset_traces()
+            self._update_crashes_badge(0)
         self._db.clear()
         self._next_row_id = 1
         self._timeline.reset([])
@@ -1465,6 +1524,10 @@ class MainWindow(QMainWindow):
             self._stats_dialog._update_status_label()
         self._update_stats_button_label()
         self._update_status()
+        # timeline.reset() also wipes _filtered_buckets to None — re-arm the
+        # filtered-bucket tracking so new records honor the active filters
+        # without requiring the user to toggle anything.
+        self._rebuild_timeline_filter()
 
         # 2. Also clear the device-side ring buffer so old logs don't replay
         #    on the next connect.  Fire-and-forget; errors are silent.
@@ -1567,6 +1630,10 @@ class MainWindow(QMainWindow):
             for rec in records:
                 rec.row_id = self._next_row_id
                 self._next_row_id += 1
+            # Reset crash state for the new dataset, then re-scan.
+            if self._crashes_dialog is not None:
+                self._crashes_dialog.reset_traces()
+            self._feed_records_to_crashes(records)
             self._db.insert_batch(records)
             self._model.append_records(records)
             self._timeline.reset(records)
@@ -1750,6 +1817,88 @@ class MainWindow(QMainWindow):
             )
             self._mem_dialog.set_adb_exe(self._adb_exe())
         self._toggle_dialog(self._mem_dialog)
+
+    # ================================================================== crashes
+    def _ensure_crashes_dialog(self) -> CrashesDialog:
+        if self._crashes_dialog is None:
+            dlg = CrashesDialog(
+                start_regex=self._settings.crash_start_regex,
+                follow_regex=self._settings.crash_follow_regex,
+                min_count=self._settings.crash_min_count,
+                capture_enabled=self._settings.crash_capture_enabled,
+                parent=self,
+            )
+            dlg.settings_changed.connect(self._on_crash_settings_changed)
+            dlg.count_changed.connect(self._update_crashes_badge)
+            dlg.flags_changed.connect(self._model.repaint_crash_rows)
+            self._crashes_dialog = dlg
+            self._track_dialog(dlg, self._btn_crashes)
+        return self._crashes_dialog
+
+    def _show_crashes_dialog(self) -> None:
+        dlg = self._ensure_crashes_dialog()
+        self._toggle_dialog(dlg)
+
+    def _on_crash_settings_changed(self) -> None:
+        dlg = self._ensure_crashes_dialog()
+        self._settings.crash_capture_enabled = dlg.capture_enabled
+        self._settings.crash_start_regex = dlg.start_regex
+        self._settings.crash_follow_regex = dlg.follow_regex
+        self._settings.crash_min_count = dlg.min_count
+        try:
+            self._settings.save()
+        except Exception:
+            pass
+        # Re-scan all currently-loaded records under the new settings.
+        for rec in self._model.iter_records():
+            rec.is_crash = False
+        dlg.reset_traces()
+        if dlg.capture_enabled and dlg.start_regex:
+            dlg.feed_records(list(self._model.iter_records()))
+        self._model.repaint_crash_rows()
+        self._update_crashes_badge(dlg.crash_count())
+
+    def _feed_records_to_crashes(self, records: List[LogRecord]) -> None:
+        if not self._settings.crash_capture_enabled:
+            return
+        if not self._settings.crash_start_regex:
+            return
+        dlg = self._ensure_crashes_dialog()
+        changed = dlg.feed_records(records)
+        if changed:
+            self._model.repaint_crash_rows()
+            self._update_crashes_badge(dlg.crash_count())
+
+    def _update_crashes_badge(self, count: int) -> None:
+        base = app_icon("crashes")
+        if count <= 0:
+            self._btn_crashes.setIcon(base)
+            return
+        size = 32  # render large; Qt scales down to button iconSize
+        pm = base.pixmap(size, size)
+        if pm.isNull():
+            self._btn_crashes.setIcon(base)
+            return
+        label = str(count) if count < 99 else "99+"
+        painter = QPainter(pm)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        # Badge sized to fit text, anchored top-right.
+        font = QFont()
+        font.setBold(True)
+        font.setPixelSize(13)
+        painter.setFont(font)
+        fm = painter.fontMetrics()
+        text_w = fm.horizontalAdvance(label)
+        diam = max(16, text_w + 8)
+        x = pm.width() - diam
+        y = 0
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor("#D32F2F"))
+        painter.drawEllipse(x, y, diam, diam)
+        painter.setPen(QColor("#FFFFFF"))
+        painter.drawText(x, y, diam, diam, Qt.AlignCenter, label)
+        painter.end()
+        self._btn_crashes.setIcon(QIcon(pm))
 
     # ================================================================== bookmarks
     def _show_bookmarks_dialog(self) -> None:
