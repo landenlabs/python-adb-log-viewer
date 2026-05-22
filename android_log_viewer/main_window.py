@@ -164,6 +164,7 @@ class MainWindow(QMainWindow):
         self._table.verticalHeader().setDefaultSectionSize(
             16 if self._settings.compact_rows else 20
         )
+        self._apply_wrap_mode()
 
         # CLI args win; otherwise fall back to startup patterns saved in the color profile.
         effective_tag = initial_tag or self._settings.startup_tag
@@ -274,7 +275,9 @@ class MainWindow(QMainWindow):
         self._table.setSelectionMode(QTableView.ExtendedSelection)
         self._table.setAlternatingRowColors(True)
         self._table.setShowGrid(False)
-        self._table.setWordWrap(False)
+        # Default fixed message-column width used when wrap is off. Saved here
+        # so the wrap toggle has a stable value to restore.
+        self._msg_col_fixed_width = 2000
         self._table.verticalHeader().setVisible(False)
         hh = self._table.horizontalHeader()
         hh.setStretchLastSection(False)
@@ -287,19 +290,18 @@ class MainWindow(QMainWindow):
         hh.resizeSection(2, 60)   # tid
         hh.resizeSection(3, 40)   # level
         hh.resizeSection(4, 180)  # tag
-        hh.resizeSection(COL_MSG, 2000)  # message — wide enough to trigger horizontal scroll
-        hh.setSectionResizeMode(COL_MSG, QHeaderView.Interactive)
+        hh.resizeSection(COL_MSG, self._msg_col_fixed_width)
         self._table.setHorizontalScrollMode(QTableView.ScrollPerPixel)
         self._table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self._table.setAutoScroll(False)
-        
+
         vh = self._table.verticalHeader()
         # Allow rows as small as 14px — the theme's QHeaderView::section
         # padding otherwise gives Qt a min section height around 20 and
         # silently clips setDefaultSectionSize(16) for compact rows.
         vh.setMinimumSectionSize(14)
         vh.setDefaultSectionSize(16 if self._settings.compact_rows else 20)
-        vh.setSectionResizeMode(QHeaderView.Fixed)
+        self._apply_wrap_mode()
         
         self._table.setContextMenuPolicy(Qt.CustomContextMenu)
         self._highlight_delegate = HighlightDelegate(self._table)
@@ -1037,10 +1039,39 @@ class MainWindow(QMainWindow):
         row_h = max(14, round(18 * pt / _BASE_PT))
         vh = self._table.verticalHeader()
         vh.setDefaultSectionSize(row_h)
-        for i in range(self._model.rowCount()):
-            vh.resizeSection(i, row_h)
+        # When wrap is on, vh runs in ResizeToContents mode and per-row
+        # resizeSection() calls would fight the layout — skip them.
+        if not self._settings.wrap_messages:
+            for i in range(self._model.rowCount()):
+                vh.resizeSection(i, row_h)
         pct = round(100 * pt / _BASE_PT)
         self._lbl_zoom.setText(f"{pct}%")
+
+    def _apply_wrap_mode(self) -> None:
+        """Apply current wrap_messages setting to the log table.
+
+        Wrap on: message column stretches to viewport (no horizontal scroll
+        from this column), rows auto-size to show all wrapped lines.
+        Wrap off: message column is a fixed wide width, rows are fixed
+        height, horizontal scroll appears as needed.
+        """
+        hh = self._table.horizontalHeader()
+        vh = self._table.verticalHeader()
+        wrap = self._settings.wrap_messages
+        self._table.setWordWrap(wrap)
+        if wrap:
+            # Remember the user's last interactive width so we can restore it
+            # when wrap is turned back off.
+            cur = hh.sectionSize(COL_MSG)
+            if cur > 0:
+                self._msg_col_fixed_width = cur
+            hh.setSectionResizeMode(COL_MSG, QHeaderView.Stretch)
+            vh.setSectionResizeMode(QHeaderView.ResizeToContents)
+        else:
+            hh.setSectionResizeMode(COL_MSG, QHeaderView.Interactive)
+            hh.resizeSection(COL_MSG, self._msg_col_fixed_width)
+            vh.setSectionResizeMode(QHeaderView.Fixed)
+            vh.setDefaultSectionSize(16 if self._settings.compact_rows else 20)
 
     # ================================================================== record
     def _on_record_toggled(self, checked: bool) -> None:
@@ -1586,6 +1617,7 @@ class MainWindow(QMainWindow):
         self._table.verticalHeader().setDefaultSectionSize(
             16 if self._settings.compact_rows else 20
         )
+        self._apply_wrap_mode()
         self._settings.save()
         self._update_settings_button_label()
         self._update_status()
@@ -1830,6 +1862,7 @@ class MainWindow(QMainWindow):
         self._table.verticalHeader().setDefaultSectionSize(
             16 if self._settings.compact_rows else 20
         )
+        self._apply_wrap_mode()
 
     def closeEvent(self, event) -> None:
         # Stop any running background threads before Qt tears down the widget tree.

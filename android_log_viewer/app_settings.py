@@ -68,6 +68,7 @@ class AppSettings:
         self.merge_same_time_tag: bool = False
         self.timeline_follows_filter: bool = True
         self.compact_rows: bool = False
+        self.wrap_messages: bool = False
         self.adb_path: str = ""   # empty = use platform default (adb / adb.exe)
         self.startup_tag: str = ""
         self.startup_text: str = ""
@@ -100,6 +101,7 @@ class AppSettings:
             "merge_same_time_tag": self.merge_same_time_tag,
             "timeline_follows_filter": self.timeline_follows_filter,
             "compact_rows": self.compact_rows,
+            "wrap_messages": self.wrap_messages,
             "adb_path": self.adb_path,
             "startup_tag": self.startup_tag,
             "startup_text": self.startup_text,
@@ -157,6 +159,8 @@ class AppSettings:
             s.timeline_follows_filter = bool(data["timeline_follows_filter"])
         if "compact_rows" in data:
             s.compact_rows = bool(data["compact_rows"])
+        if "wrap_messages" in data:
+            s.wrap_messages = bool(data["wrap_messages"])
         if "adb_path" in data and isinstance(data["adb_path"], str):
             s.adb_path = data["adb_path"]
         if "startup_tag" in data and isinstance(data["startup_tag"], str):

@@ -3,7 +3,7 @@ from __future__ import annotations
 import subprocess
 from typing import List, Optional
 
-from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtCore import QPoint, QRect, QSize, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -19,9 +19,11 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLayout,
     QLineEdit,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
@@ -41,6 +43,80 @@ from .app_settings import (
     _settings_path,
 )
 from .colors_dialog import CollapsibleBox
+
+
+class FlowLayout(QLayout):
+    """Lays out child widgets left-to-right and wraps to a new row when the
+    available width runs out. Used so the Appearance section's checkboxes
+    reflow instead of clipping when the dialog is narrow."""
+
+    def __init__(self, parent: QWidget | None = None, hspacing: int = 12, vspacing: int = 6) -> None:
+        super().__init__(parent)
+        self._items: list = []
+        self._hspace = hspacing
+        self._vspace = vspacing
+        if parent is not None:
+            self.setContentsMargins(0, 0, 0, 0)
+
+    def addItem(self, item) -> None:
+        self._items.append(item)
+
+    def count(self) -> int:
+        return len(self._items)
+
+    def itemAt(self, index: int):
+        if 0 <= index < len(self._items):
+            return self._items[index]
+        return None
+
+    def takeAt(self, index: int):
+        if 0 <= index < len(self._items):
+            return self._items.pop(index)
+        return None
+
+    def expandingDirections(self) -> Qt.Orientations:
+        return Qt.Orientations(Qt.Orientation(0))
+
+    def hasHeightForWidth(self) -> bool:
+        return True
+
+    def heightForWidth(self, width: int) -> int:
+        return self._do_layout(QRect(0, 0, width, 0), test_only=True)
+
+    def setGeometry(self, rect: QRect) -> None:
+        super().setGeometry(rect)
+        self._do_layout(rect, test_only=False)
+
+    def sizeHint(self) -> QSize:
+        return self.minimumSize()
+
+    def minimumSize(self) -> QSize:
+        size = QSize()
+        for item in self._items:
+            size = size.expandedTo(item.minimumSize())
+        m = self.contentsMargins()
+        size += QSize(m.left() + m.right(), m.top() + m.bottom())
+        return size
+
+    def _do_layout(self, rect: QRect, test_only: bool) -> int:
+        m = self.contentsMargins()
+        effective = rect.adjusted(m.left(), m.top(), -m.right(), -m.bottom())
+        x = effective.x()
+        y = effective.y()
+        line_height = 0
+        for item in self._items:
+            wid = item.sizeHint()
+            next_x = x + wid.width() + self._hspace
+            if next_x - self._hspace > effective.right() and line_height > 0:
+                x = effective.x()
+                y = y + line_height + self._vspace
+                next_x = x + wid.width() + self._hspace
+                line_height = 0
+            if not test_only:
+                item.setGeometry(QRect(QPoint(x, y), wid))
+            x = next_x
+            line_height = max(line_height, wid.height())
+        return y + line_height - rect.y() + m.bottom()
 
 
 class SettingsDialog(QDialog):
@@ -127,20 +203,27 @@ class SettingsDialog(QDialog):
 
     def _build_appearance_group(self) -> QWidget:
         grp = QGroupBox("Appearance")
-        layout = QHBoxLayout(grp)
-        layout.addWidget(QLabel("Theme:"))
+        layout = FlowLayout(grp, hspacing=16, vspacing=6)
+
+        # Theme label + combo travel together so they don't wrap apart.
+        theme_box = QWidget()
+        theme_row = QHBoxLayout(theme_box)
+        theme_row.setContentsMargins(0, 0, 0, 0)
+        theme_row.setSpacing(6)
+        theme_row.addWidget(QLabel("Theme:"))
         self._theme_combo = QComboBox()
         self._theme_combo.addItems(["Light", "Dark"])
         self._theme_combo.currentTextChanged.connect(self._on_theme_combo_changed)
-        layout.addWidget(self._theme_combo)
-        layout.addSpacing(16)
+        theme_row.addWidget(self._theme_combo)
+        layout.addWidget(theme_box)
+
         self._merge_cb = QCheckBox("Merge same-time + tag messages")
         self._merge_cb.setToolTip(
             "Merge consecutive log entries that share the same timestamp (second) and tag\n"
             "into a single row.  Double-click the row to expand its lines in place."
         )
         layout.addWidget(self._merge_cb)
-        layout.addSpacing(16)
+
         self._timeline_filter_cb = QCheckBox("Timeline follows filter")
         self._timeline_filter_cb.setToolTip(
             "When level, tag, or text filters are active, the timeline shows\n"
@@ -148,13 +231,21 @@ class SettingsDialog(QDialog):
             "Clearing all filters restores the full timeline."
         )
         layout.addWidget(self._timeline_filter_cb)
-        layout.addSpacing(16)
+
         self._compact_rows_cb = QCheckBox("Compact rows")
         self._compact_rows_cb.setToolTip(
             "Tighter vertical spacing in the log table for more rows on screen."
         )
         layout.addWidget(self._compact_rows_cb)
-        layout.addStretch()
+
+        self._wrap_messages_cb = QCheckBox("Wrap long messages")
+        self._wrap_messages_cb.setToolTip(
+            "When on, long message lines wrap to fit the viewer width and\n"
+            "the row grows to show all wrapped lines (no horizontal scroll).\n"
+            "When off, messages stay on one line and a horizontal scroll bar\n"
+            "appears as needed."
+        )
+        layout.addWidget(self._wrap_messages_cb)
         return grp
 
     # ------------------------------------------------------------------ adb executable
@@ -347,6 +438,7 @@ class SettingsDialog(QDialog):
         self._merge_cb.setChecked(self._settings.merge_same_time_tag)
         self._timeline_filter_cb.setChecked(self._settings.timeline_follows_filter)
         self._compact_rows_cb.setChecked(self._settings.compact_rows)
+        self._wrap_messages_cb.setChecked(self._settings.wrap_messages)
 
         # ADB path — block signal so _on_adb_path_changed fires once at the end
         self._adb_path_edit.blockSignals(True)
@@ -393,6 +485,7 @@ class SettingsDialog(QDialog):
         self._settings.merge_same_time_tag = self._merge_cb.isChecked()
         self._settings.timeline_follows_filter = self._timeline_filter_cb.isChecked()
         self._settings.compact_rows = self._compact_rows_cb.isChecked()
+        self._settings.wrap_messages = self._wrap_messages_cb.isChecked()
         self._settings.adb_path = self._adb_path_edit.text().strip()
         chosen = {name for name, cb in self._buffer_cbs.items() if cb.isChecked()}
         self._settings.buffers = chosen if chosen else {"main"}
