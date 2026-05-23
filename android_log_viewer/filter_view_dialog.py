@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import re as _re
 from typing import List, Optional
 
 from PySide6.QtCore import QModelIndex, QTimer, Qt
+from PySide6.QtGui import QAction, QFontMetrics, QKeySequence
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -12,6 +14,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QSizePolicy,
     QSplitter,
     QTableView,
     QVBoxLayout,
@@ -24,6 +27,28 @@ from .icons import app_icon
 from .log_model import COL_MSG, COL_TAG, HighlightDelegate, LogFilterProxy, LogModel
 from .log_record import LogRecord
 from .timeline_widget import TimelineWidget
+
+
+_SECTION_BUTTON_STYLE = """
+QPushButton#section_toggle {
+    text-align: left;
+    padding: 2px 6px;
+    background-color: transparent;
+    border: 1px solid transparent;
+    border-radius: 0;
+    font-weight: normal;
+}
+QPushButton#section_toggle[active="true"] {
+    font-weight: bold;
+}
+QPushButton#section_toggle:checked,
+QPushButton#section_toggle[active="true"]:checked {
+    color: white;
+    background-color: #1565C0;
+    border: 1px solid #1565C0;
+    font-weight: bold;
+}
+"""
 
 
 class FilterViewDialog(QDialog):
@@ -67,6 +92,9 @@ class FilterViewDialog(QDialog):
 
         levels = {lvl for lvl, cb in self._level_cbs.items() if cb.isChecked()}
         self._proxy.set_levels(levels)
+
+        self._auto_expand_filter_sections()
+        self._update_section_indicators()
 
         existing = model.all_records()
         if existing:
@@ -143,51 +171,175 @@ class FilterViewDialog(QDialog):
         frame.setFrameShape(QFrame.StyledPanel)
         row = QHBoxLayout(frame)
         row.setContentsMargins(6, 3, 6, 3)
-        row.setSpacing(6)
+        row.setSpacing(4)
 
-        row.addWidget(QLabel("Level:"))
+        # ----- Level -----
+        self._lvl_toggle = self._make_section_toggle("Level")
+        row.addWidget(self._lvl_toggle)
+        self._lvl_container = QWidget()
+        self._lvl_container.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+        lvl_l = QHBoxLayout(self._lvl_container)
+        lvl_l.setContentsMargins(0, 0, 0, 0)
+        lvl_l.setSpacing(4)
         self._level_cbs: dict[str, QCheckBox] = {}
         for lvl in LEVELS:
             cb = QCheckBox(lvl)
             cb.setChecked(True)
             cb.setToolTip(LEVEL_NAMES[lvl])
+            cb.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
             self._level_cbs[lvl] = cb
-            row.addWidget(cb)
+            self._style_level_checkbox(cb, lvl)
+            lvl_l.addWidget(cb)
+        row.addWidget(self._lvl_container)
+        self._wire_section_toggle(self._lvl_toggle, self._lvl_container, "Level")
 
-        row.addSpacing(12)
+        row.addSpacing(8)
 
-        row.addWidget(QLabel("Tag:"))
+        # ----- Tag -----
+        self._tag_toggle = self._make_section_toggle("Tag")
+        row.addWidget(self._tag_toggle)
         self._tag_edit = QLineEdit()
-        self._tag_edit.setPlaceholderText("regex…")
+        self._tag_edit.setPlaceholderText("Tag regex…")
         self._tag_edit.setClearButtonEnabled(True)
         self._tag_edit.setToolTip("Filter by tag name (regex, case-insensitive)")
-        row.addWidget(self._tag_edit, stretch=1)
+        row.addWidget(self._tag_edit, stretch=100)
+        self._wire_section_toggle(self._tag_toggle, self._tag_edit, "Tag")
 
-        row.addWidget(QLabel("Text:"))
+        # ----- Message -----
+        self._text_toggle = self._make_section_toggle("Message")
+        row.addWidget(self._text_toggle)
         self._text_edit = QLineEdit()
-        self._text_edit.setPlaceholderText("regex…")
+        self._text_edit.setPlaceholderText("Message regex…")
         self._text_edit.setClearButtonEnabled(True)
         self._text_edit.setToolTip("Filter by message text or tag (regex, case-insensitive)")
-        row.addWidget(self._text_edit, stretch=1)
+        row.addWidget(self._text_edit, stretch=100)
+        self._wire_section_toggle(self._text_toggle, self._text_edit, "Message")
+
+        # ----- Search -----
+        self._search_toggle = self._make_section_toggle("Search")
+        row.addWidget(self._search_toggle)
+        self._search_container = QWidget()
+        sc_l = QHBoxLayout(self._search_container)
+        sc_l.setContentsMargins(0, 0, 0, 0)
+        sc_l.setSpacing(2)
+        self._search_edit = QLineEdit()
+        self._search_edit.setPlaceholderText("Search message (regex)…")
+        self._search_edit.setClearButtonEnabled(True)
+        self._search_edit.setToolTip(
+            "Search message text (regex, case-insensitive).\n"
+            "Enter / ▶: next match · Shift+Enter / ◀: previous match"
+        )
+        sc_l.addWidget(self._search_edit, stretch=1)
+        self._btn_search_prev = QPushButton("◀")
+        self._btn_search_prev.setFixedWidth(40)
+        self._btn_search_prev.setToolTip("Previous match (Shift+Enter)")
+        sc_l.addWidget(self._btn_search_prev)
+        self._btn_search_next = QPushButton("▶")
+        self._btn_search_next.setFixedWidth(40)
+        self._btn_search_next.setToolTip("Next match (Enter)")
+        sc_l.addWidget(self._btn_search_next)
+        row.addWidget(self._search_container, stretch=100)
+        self._wire_section_toggle(self._search_toggle, self._search_container, "Search")
 
         self._btn_clear_filters = QPushButton("✕ Filters")
         self._btn_clear_filters.setToolTip("Reset all level, tag, and text filters")
         row.addWidget(self._btn_clear_filters)
 
+        row.addStretch(1)
+
         return frame
+
+    # ============================================================ collapsible sections
+    def _make_section_toggle(self, label: str) -> QPushButton:
+        btn = QPushButton(f"▸ {label}")
+        btn.setObjectName("section_toggle")
+        btn.setCheckable(True)
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setFlat(True)
+        btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+        btn.setStyleSheet(_SECTION_BUTTON_STYLE)
+        fm = QFontMetrics(btn.font())
+        btn.setFixedWidth(fm.horizontalAdvance(f"▾ {label}") + 14)
+        return btn
+
+    def _wire_section_toggle(self, btn: QPushButton, widget: QWidget, label: str) -> None:
+        def on_toggle(checked: bool) -> None:
+            btn.setText(f"{'▾' if checked else '▸'} {label}")
+            widget.setVisible(checked)
+            if checked:
+                if isinstance(widget, QLineEdit):
+                    widget.setFocus()
+                else:
+                    focus_target = widget.findChild(QLineEdit)
+                    if focus_target:
+                        focus_target.setFocus()
+
+        btn.toggled.connect(on_toggle)
+        widget.setVisible(False)
+
+    def _style_level_checkbox(self, cb: QCheckBox, lvl: str) -> None:
+        fg = self._settings.level_fg.get(lvl, "")
+        bg = self._settings.level_bg.get(lvl, "")
+        if not fg and not bg:
+            cb.setStyleSheet("")
+            return
+        parts = ["padding: 1px 5px;", "border-radius: 3px;", "font-weight: bold;"]
+        if bg:
+            parts.append(f"background-color: {bg};")
+            parts.append(f"border: 1px solid {bg};")
+        if fg:
+            parts.append(f"color: {fg};")
+        cb.setStyleSheet("QCheckBox { " + " ".join(parts) + " }")
+
+    def _update_section_indicators(self) -> None:
+        all_checked = all(cb.isChecked() for cb in self._level_cbs.values())
+        states = (
+            (self._lvl_toggle, not all_checked),
+            (self._tag_toggle, bool(self._tag_edit.text())),
+            (self._text_toggle, bool(self._text_edit.text())),
+            (self._search_toggle, bool(self._search_edit.text())),
+        )
+        for btn, is_active in states:
+            btn.setProperty("active", "true" if is_active else "false")
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
+
+    def _auto_expand_filter_sections(self) -> None:
+        if not all(cb.isChecked() for cb in self._level_cbs.values()):
+            self._lvl_toggle.setChecked(True)
+        if self._tag_edit.text():
+            self._tag_toggle.setChecked(True)
+        if self._text_edit.text():
+            self._text_toggle.setChecked(True)
+        if self._search_edit.text():
+            self._search_toggle.setChecked(True)
 
     # ================================================================== wiring
 
     def _wire_signals(self) -> None:
         for cb in self._level_cbs.values():
             cb.toggled.connect(self._on_filter_changed)
+            cb.toggled.connect(self._update_section_indicators)
 
         self._tag_edit.textChanged.connect(self._proxy.set_tag_filter)
         self._tag_edit.textChanged.connect(self._update_status)
         self._tag_edit.textChanged.connect(self._schedule_timeline_filter_rebuild)
+        self._tag_edit.textChanged.connect(self._update_section_indicators)
         self._text_edit.textChanged.connect(self._proxy.set_text_filter)
         self._text_edit.textChanged.connect(self._update_status)
         self._text_edit.textChanged.connect(self._schedule_timeline_filter_rebuild)
+        self._text_edit.textChanged.connect(self._update_section_indicators)
+
+        self._search_edit.returnPressed.connect(lambda: self._search_jump(forward=True))
+        self._search_edit.textChanged.connect(self._update_section_indicators)
+        self._btn_search_next.clicked.connect(lambda: self._search_jump(forward=True))
+        self._btn_search_prev.clicked.connect(lambda: self._search_jump(forward=False))
+
+        # Shift+Return walks the search backwards while the field has focus.
+        search_prev_action = QAction("Search previous", self._search_edit)
+        search_prev_action.setShortcut(QKeySequence("Shift+Return"))
+        search_prev_action.triggered.connect(lambda: self._search_jump(forward=False))
+        self._search_edit.addAction(search_prev_action)
 
         self._btn_clear_filters.clicked.connect(self._clear_filters)
         self._chk_autoscroll.toggled.connect(self._on_autoscroll_toggled)
@@ -242,6 +394,41 @@ class FilterViewDialog(QDialog):
             cb.setChecked(True)
         self._tag_edit.clear()
         self._text_edit.clear()
+        self._search_edit.clear()
+
+    # ================================================================== search
+    def _search_jump(self, forward: bool) -> None:
+        pattern = self._search_edit.text()
+        if not pattern:
+            return
+        try:
+            rx = _re.compile(pattern, _re.IGNORECASE)
+        except _re.error:
+            rx = _re.compile(_re.escape(pattern), _re.IGNORECASE)
+
+        rows = self._proxy.rowCount()
+        if rows == 0:
+            return
+        current = self._table.currentIndex().row()
+        if current < 0:
+            current = -1 if forward else rows
+        step = 1 if forward else -1
+
+        for offset in range(1, rows + 1):
+            r = (current + offset * step) % rows
+            rec: Optional[LogRecord] = self._proxy.data(
+                self._proxy.index(r, 0), Qt.UserRole
+            )
+            if rec is None:
+                continue
+            if rx.search(rec.message):
+                if self._auto_scroll:
+                    self._chk_autoscroll.setChecked(False)
+                self._table.scrollTo(
+                    self._proxy.index(r, 0), QTableView.PositionAtCenter
+                )
+                self._table.selectRow(r)
+                return
 
     # ================================================================== timeline
 

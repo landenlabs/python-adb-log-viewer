@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from typing import List, Optional, Set
 
 from PySide6.QtCore import QEvent, QModelIndex, QPoint, QSize, QTimer, Qt
@@ -124,6 +127,7 @@ class MainWindow(QMainWindow):
         self._filter_view: Optional[FilterViewDialog] = None
         self._bookmarks_dialog: Optional[BookmarksDialog] = None
         self._crashes_dialog: Optional[CrashesDialog] = None
+        self._about_dialog: Optional[AboutDialog] = None
         self._selected_range: Optional[tuple] = None   # (from_key, to_key) or None
         self._range_filter_active: bool = False
 
@@ -151,6 +155,7 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
         self._wire_signals()
+        self._install_dock_menu()
         self._refresh_devices()
 
         # Apply loaded settings immediately so the proxy and button labels
@@ -252,6 +257,10 @@ class MainWindow(QMainWindow):
         # Stats has a layered state (open + active filters); delegate to it.
         if btn is self._act_stats:
             self._update_stats_button_label()
+            return
+        # Settings also layers "open" on top of an "active filters" indicator.
+        if btn is self._btn_settings:
+            self._update_settings_button_label()
             return
         # Menu actions don't support stylesheets — bold-italic font marks "open."
         if isinstance(btn, QAction):
@@ -459,6 +468,8 @@ class MainWindow(QMainWindow):
         # dynamic-label code keeps working.
         self._act_save = QAction(app_icon("save"), "Save…", self)
         self._act_open = QAction(app_icon("open"), "Open…", self)
+        self._act_new_copy = QAction("Run New Copy", self)
+        self._act_new_copy.setToolTip("Launch a second independent instance of the app")
         self._act_stats = QAction(app_icon("stats"), "Stats", self)
         self._act_memory = QAction(app_icon("memory"), "Mem", self)
         self._act_network = QAction(app_icon("network"), "Net", self)
@@ -511,6 +522,8 @@ class MainWindow(QMainWindow):
         file_menu = mb.addMenu("&File")
         file_menu.addAction(self._act_open)
         file_menu.addAction(self._act_save)
+        file_menu.addSeparator()
+        file_menu.addAction(self._act_new_copy)
 
         tools_menu = mb.addMenu("&Tools")
         tools_menu.addAction(self._act_stats)
@@ -788,6 +801,7 @@ class MainWindow(QMainWindow):
         self._btn_clear.clicked.connect(self._clear_logs)
         self._act_save.triggered.connect(self._save_logs)
         self._act_open.triggered.connect(self._open_logs)
+        self._act_new_copy.triggered.connect(self._run_new_copy)
         self._chk_autoscroll.toggled.connect(self._on_autoscroll_toggled)
         self._chk_filter_timeline.toggled.connect(self._on_filter_timeline_toggled)
 
@@ -1651,6 +1665,41 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.critical(self, "Open Error", str(exc))
 
+    # ================================================================== run new copy
+    def _new_copy_command(self) -> List[str]:
+        """Build the argv that spawns a fresh independent instance of this app.
+
+        On macOS, if we're running inside a .app bundle, use `open -n <bundle>`
+        so LaunchServices treats it as a separate instance. Otherwise fall back
+        to re-launching the current Python interpreter on the package module —
+        works in dev runs and on non-mac platforms.
+        """
+        if sys.platform == "darwin":
+            path = os.path.realpath(sys.executable)
+            while path and path != "/":
+                if path.endswith(".app"):
+                    return ["open", "-n", path]
+                path = os.path.dirname(path)
+        return [sys.executable, "-m", "android_log_viewer"]
+
+    def _run_new_copy(self) -> None:
+        cmd = self._new_copy_command()
+        try:
+            subprocess.Popen(cmd, start_new_session=True)
+        except Exception as exc:
+            QMessageBox.warning(
+                self, "Run New Copy", f"Failed to launch new copy:\n{exc}"
+            )
+
+    def _install_dock_menu(self) -> None:
+        """On macOS, register a right-click menu for the Dock icon."""
+        if sys.platform != "darwin":
+            return
+        # Held on self so it isn't GC'd while it serves as the dock menu.
+        self._dock_menu = QMenu(self)
+        self._dock_menu.addAction(self._act_new_copy)
+        self._dock_menu.setAsDockMenu()
+
     # ================================================================== settings dialog
 
     def _show_settings_dialog(self) -> None:
@@ -1658,13 +1707,13 @@ class MainWindow(QMainWindow):
             self._settings_dialog = SettingsDialog(self._settings, parent=self)
             self._settings_dialog.settings_applied.connect(self._apply_settings)
             self._settings_dialog.theme_changed.connect(self._on_theme_changed)
-        device_text = self._device_combo.currentText()
-        device = device_text if not device_text.startswith("(") else None
-        self._settings_dialog.set_device(device)
-        self._settings_dialog._load()   # sync from current settings each time shown
-        self._settings_dialog.show()
-        self._settings_dialog.raise_()
-        self._settings_dialog.activateWindow()
+            self._track_dialog(self._settings_dialog, self._btn_settings)
+        if not self._settings_dialog.isVisible():
+            device_text = self._device_combo.currentText()
+            device = device_text if not device_text.startswith("(") else None
+            self._settings_dialog.set_device(device)
+            self._settings_dialog._load()
+        self._toggle_dialog(self._settings_dialog)
 
     def _on_theme_changed(self, theme: str) -> None:
         """Live preview/apply from the Settings dialog — restyle without
@@ -1700,11 +1749,16 @@ class MainWindow(QMainWindow):
 
     def _update_settings_button_label(self) -> None:
         active = sum(1 for r in self._settings.exclude_rules if r.enabled and r.pattern)
-        if active:
-            self._btn_settings.setText(f"Settings [{active}]")
+        self._btn_settings.setText(f"Settings [{active}]" if active else "Settings")
+        is_open = (
+            self._settings_dialog is not None and self._settings_dialog.isVisible()
+        )
+        if is_open:
+            # Open state wins — match the other dialog toggle buttons.
+            self._btn_settings.setStyleSheet(_DIALOG_OPEN_STYLE)
+        elif active:
             self._btn_settings.setStyleSheet("color: #E65100;")
         else:
-            self._btn_settings.setText("Settings")
             self._btn_settings.setStyleSheet("")
 
     # ================================================================== header clicks
@@ -1803,7 +1857,12 @@ class MainWindow(QMainWindow):
 
     # ================================================================== about dialog
     def _show_about_dialog(self) -> None:
-        AboutDialog(parent=self).exec()
+        if self._about_dialog is None:
+            self._about_dialog = AboutDialog(parent=self)
+            # Non-modal so the toolbar button stays clickable for toggle-close.
+            self._about_dialog.setModal(False)
+            self._track_dialog(self._about_dialog, self._btn_about)
+        self._toggle_dialog(self._about_dialog)
 
     # ================================================================== memory dialog
     def _show_mem_dialog(self) -> None:
