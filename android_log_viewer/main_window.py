@@ -100,9 +100,9 @@ class MainWindow(QMainWindow):
         self,
         initial_tag: str = "",
         initial_text: str = "",
+        initial_color_profile: str = "",
     ) -> None:
         super().__init__()
-        self.setWindowTitle(f"Android Log Viewer - v{__version__}   LanDen Labs (2026)")
         self.resize(1440, 900)
 
         self._db = LogDatabase()          # in-memory SQLite
@@ -116,6 +116,14 @@ class MainWindow(QMainWindow):
         self._proxy.setSourceModel(self._model)
 
         self._settings = AppSettings.load()
+        # profile_dirty is runtime-only; always start clean on launch.
+        self._settings.profile_dirty = False
+        # --colors <name|path>: load and apply a color profile before any
+        # widget reads from settings, so the bulk-apply block below picks
+        # up the profile values automatically.
+        if initial_color_profile:
+            self._apply_initial_color_profile(initial_color_profile)
+        self._update_window_title()
         self._model.set_max_records(self._settings.max_records)
         self._stats = StatsTracker(top_n=self._settings.stats_top_n)
         self._stats_dialog: Optional[StatsDialog] = None
@@ -165,7 +173,7 @@ class MainWindow(QMainWindow):
         # the proxy stays at its all-levels default and _has_active_timeline_filter
         # returns False at startup, leaving the timeline unfiltered.
         self._proxy.set_levels(set(self._settings.level_filters))
-        self._proxy.set_exclude_rules(self._settings.exclude_rules)
+        self._proxy.set_exclude_rules(self._active_exclude_rules())
         self._model.set_merge_enabled(self._settings.merge_same_time_tag)
         self._update_settings_button_label()
         self._apply_color_config()
@@ -1160,7 +1168,7 @@ class MainWindow(QMainWindow):
         self._reader = AdbReader(
             device=device,
             buffers=self._settings.buffers,
-            exclude_rules=self._settings.exclude_rules,
+            exclude_rules=self._active_exclude_rules(),
             adb_exe=self._adb_exe(),
             parent=self,
         )
@@ -1272,6 +1280,15 @@ class MainWindow(QMainWindow):
         self._settings.save()
         self._update_status()
         self._schedule_timeline_filter_rebuild()
+
+    # ================================================================== exclusion lists
+
+    def _active_exclude_rules(self):
+        """Return the union of global (Settings dialog) and per-project
+        (Colors dialog / current color profile) exclude rules, both of
+        which feed the proxy and AdbReader. The two lists are edited
+        independently and combined here at the consumption boundary."""
+        return list(self._settings.exclude_rules) + list(self._settings.profile_exclude_rules)
 
     # ================================================================== timeline filter
     def _schedule_timeline_filter_rebuild(self) -> None:
@@ -1486,15 +1503,24 @@ class MainWindow(QMainWindow):
     def _add_exclude_rule_from_tag(self, tag: str) -> None:
         from .app_settings import ExcludeRule
         pattern = f"^{_re.escape(tag)}$"
-        if any(r.pattern == pattern and r.field == "TAG" for r in self._settings.exclude_rules):
+        # The right-click "Save exclude rule" path is per-project — it
+        # appends to the color-profile list, not the global Settings list.
+        existing = self._settings.profile_exclude_rules
+        if any(r.pattern == pattern and r.field == "TAG" for r in existing):
             self.statusBar().showMessage(f"Exclude rule already exists for tag: {tag}", 3000)
             return
-        self._settings.exclude_rules.append(ExcludeRule(pattern=pattern, field="TAG", enabled=True))
+        existing.append(ExcludeRule(pattern=pattern, field="TAG", enabled=True))
         self._settings.save()
-        self._proxy.set_exclude_rules(self._settings.exclude_rules)
+        self._proxy.set_exclude_rules(self._active_exclude_rules())
         self._update_settings_button_label()
-        if self._colors_dialog and self._colors_dialog.isVisible():
-            self._colors_dialog._load()
+        # Settings.json now diverges from the named profile file on disk.
+        if self._colors_dialog:
+            self._colors_dialog.set_profile_dirty(True)
+            if self._colors_dialog.isVisible():
+                self._colors_dialog._load()
+        else:
+            self._settings.profile_dirty = True
+        self._update_window_title()
         self._rebuild_timeline_filter()
         self.statusBar().showMessage(f"Exclude rule added for tag: {tag}", 3000)
 
@@ -1724,7 +1750,7 @@ class MainWindow(QMainWindow):
 
     def _apply_settings(self) -> None:
         apply_theme(self._settings.theme)
-        self._proxy.set_exclude_rules(self._settings.exclude_rules)
+        self._proxy.set_exclude_rules(self._active_exclude_rules())
         self._model.set_merge_enabled(self._settings.merge_same_time_tag)
         self._model.set_max_records(self._settings.max_records)
         self._stats.top_n = self._settings.stats_top_n
@@ -1740,7 +1766,7 @@ class MainWindow(QMainWindow):
         self._update_empty_overlay()
         self._rebuild_timeline_filter()
         if self._filter_view is not None:
-            self._filter_view.apply_exclude_rules(self._settings.exclude_rules)
+            self._filter_view.apply_exclude_rules(self._active_exclude_rules())
         self._refresh_devices()   # pick up any adb path change
         if self._reader:
             self.statusBar().showMessage(
@@ -1835,10 +1861,56 @@ class MainWindow(QMainWindow):
         if self._colors_dialog is None:
             self._colors_dialog = ColorsDialog(self._settings, parent=self)
             self._colors_dialog.colors_applied.connect(self._apply_color_config)
+            self._colors_dialog.profile_dirty_changed.connect(
+                lambda _d: self._update_window_title()
+            )
             self._track_dialog(self._colors_dialog, self._btn_colors)
         if not self._colors_dialog.isVisible():
             self._colors_dialog._load()
         self._toggle_dialog(self._colors_dialog)
+
+    # ------------------------------------------------------------------ title bar
+
+    def _update_window_title(self) -> None:
+        """Rebuild the window title, appending an 'unsaved color profile'
+        warning when the in-memory color/exclude state differs from the
+        named profile on disk. (Note: Qt cannot color the OS title bar text —
+        the warning is plain text; the dark-red rendering lives inside the
+        Colors dialog's profile label.)"""
+        title = f"Android Log Viewer - v{__version__}   LanDen Labs (2026)"
+        if getattr(self, "_settings", None) and self._settings.profile_dirty:
+            title += "   --- unsaved color profile ---"
+        self.setWindowTitle(title)
+
+    def _apply_initial_color_profile(self, name_or_path: str) -> None:
+        """Resolve the --colors argument and apply the profile to settings.
+        On any failure (missing file, unparseable JSON), print to stderr and
+        leave settings as loaded from settings.json — never crash the app
+        over a bad CLI argument."""
+        import sys
+        from .app_settings import (
+            load_color_profile_into_settings,
+            resolve_color_profile_path,
+        )
+        path = resolve_color_profile_path(name_or_path)
+        if not path.exists():
+            print(
+                f"[android_log_viewer] --colors {name_or_path!r}: "
+                f"profile file not found at {path}",
+                file=sys.stderr,
+            )
+            return
+        try:
+            load_color_profile_into_settings(self._settings, path)
+        except Exception as exc:
+            print(
+                f"[android_log_viewer] --colors {name_or_path!r}: "
+                f"failed to load {path} — {exc}",
+                file=sys.stderr,
+            )
+            return
+        # Persist the applied profile so subsequent saves don't lose it.
+        self._settings.save()
 
     def _apply_color_config(self) -> None:
         self._model.set_color_config(
@@ -1853,6 +1925,12 @@ class MainWindow(QMainWindow):
             self._settings.search_fg,
             self._settings.search_bg,
         )
+        # The Colors dialog's Apply may have changed profile_exclude_rules —
+        # push the new union into the proxy and the filter view.
+        self._proxy.set_exclude_rules(self._active_exclude_rules())
+        if self._filter_view is not None:
+            self._filter_view.apply_exclude_rules(self._active_exclude_rules())
+        self._rebuild_timeline_filter()
         self._refresh_level_checkbox_colors()
 
     # ================================================================== about dialog

@@ -62,11 +62,13 @@ class NetReader(QThread):
         base = [self.adb_exe]
         if self.device:
             base += ["-s", self.device]
+        from .adb_reader import NO_WINDOW_FLAGS
         result = subprocess.run(
             base + ["shell", cmd],
             capture_output=True,
             text=True,
             timeout=10,
+            **NO_WINDOW_FLAGS,
         )
         return result.stdout
 

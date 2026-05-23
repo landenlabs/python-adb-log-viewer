@@ -29,7 +29,8 @@ class PackagesReader(QThread):
         cmd += ["shell", "pm", "list", "packages", "-3"]
 
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            from .adb_reader import NO_WINDOW_FLAGS
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=15, **NO_WINDOW_FLAGS)
             if result.returncode != 0:
                 self.error_occurred.emit(result.stderr.strip() or "adb command failed")
                 return

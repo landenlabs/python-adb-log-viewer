@@ -121,14 +121,19 @@ class FlowLayout(QLayout):
 
 class SettingsDialog(QDialog):
     """
-    Non-modal settings dialog.
-    Writes to AppSettings in-place and emits settings_applied on OK.
-    Cancel / close simply hides the window without saving.
+    Non-modal settings dialog with auto-save semantics.
+
+    Every input change is immediately written to AppSettings, persisted to
+    settings.json, and broadcast via settings_applied — no Apply / OK
+    button is required. The Close button simply hides the dialog. A final
+    auto-save runs in closeEvent as a safety net for in-progress edits
+    (e.g. an open table editor that hasn't lost focus yet).
     """
 
     settings_applied = Signal()
     # Emitted as soon as the user picks a theme in the combo, so the main
-    # window can re-apply styling without waiting for OK.
+    # window can apply the new stylesheet without going through the
+    # heavier settings_applied path.
     theme_changed = Signal(str)
 
     def __init__(
@@ -143,8 +148,13 @@ class SettingsDialog(QDialog):
         self.setModal(False)
         self._settings = settings
         self._device = device
+        # Suppress _auto_save while _load() populates widgets — otherwise
+        # every setText / setChecked / setValue would round-trip the value
+        # back through save() during the very first paint.
+        self._suppress_autosave = False
         self._build_ui()
         self._load()
+        self._wire_autosave()
 
     # ================================================================== build
 
@@ -182,8 +192,9 @@ class SettingsDialog(QDialog):
         scroll.setWidget(scroll_content)
         root.addWidget(scroll)
 
-        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        btns.accepted.connect(self._on_accept)
+        # Auto-save semantics — no Apply / OK. Close just hides the window;
+        # every edit was already persisted by _auto_save.
+        btns = QDialogButtonBox(QDialogButtonBox.Close)
         btns.rejected.connect(self.hide)
 
         # Left-aligned helper button: opens the settings.json's folder in the
@@ -336,6 +347,15 @@ class SettingsDialog(QDialog):
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
 
+        scope_hint = QLabel(
+            "Global excludes — combined with the per-profile list from the "
+            "Colors dialog when filtering."
+        )
+        scope_hint.setProperty("hint", True)
+        scope_hint.setContentsMargins(0, 0, 0, 4)
+        scope_hint.setWordWrap(True)
+        layout.addWidget(scope_hint)
+
         self._rules_table = QTableWidget()
         self._rules_table.setColumnCount(3)
         self._rules_table.setHorizontalHeaderLabels(["On", "Pattern  (regex, case-insensitive)", "Apply To"])
@@ -432,36 +452,92 @@ class SettingsDialog(QDialog):
     # ================================================================== load / save
 
     def _load(self) -> None:
-        self._theme_combo.blockSignals(True)
-        self._theme_combo.setCurrentText(self._settings.theme.capitalize())
-        self._theme_combo.blockSignals(False)
-        self._merge_cb.setChecked(self._settings.merge_same_time_tag)
-        self._timeline_filter_cb.setChecked(self._settings.timeline_follows_filter)
-        self._compact_rows_cb.setChecked(self._settings.compact_rows)
-        self._wrap_messages_cb.setChecked(self._settings.wrap_messages)
+        self._suppress_autosave = True
+        try:
+            self._theme_combo.blockSignals(True)
+            self._theme_combo.setCurrentText(self._settings.theme.capitalize())
+            self._theme_combo.blockSignals(False)
+            self._merge_cb.setChecked(self._settings.merge_same_time_tag)
+            self._timeline_filter_cb.setChecked(self._settings.timeline_follows_filter)
+            self._compact_rows_cb.setChecked(self._settings.compact_rows)
+            self._wrap_messages_cb.setChecked(self._settings.wrap_messages)
 
-        # ADB path — block signal so _on_adb_path_changed fires once at the end
-        self._adb_path_edit.blockSignals(True)
-        self._adb_path_edit.setText(self._settings.adb_path)
-        self._adb_path_edit.blockSignals(False)
-        self._on_adb_path_changed(self._settings.adb_path)
+            # ADB path — block signal so _on_adb_path_changed fires once at the end
+            self._adb_path_edit.blockSignals(True)
+            self._adb_path_edit.setText(self._settings.adb_path)
+            self._adb_path_edit.blockSignals(False)
+            self._on_adb_path_changed(self._settings.adb_path)
 
-        # Block signals during rebuild to avoid spurious _update_command_preview calls
-        for name, cb in self._buffer_cbs.items():
-            cb.blockSignals(True)
-            cb.setChecked(name in self._settings.buffers)
-            cb.blockSignals(False)
+            # Block signals during rebuild to avoid spurious _update_command_preview calls
+            for name, cb in self._buffer_cbs.items():
+                cb.blockSignals(True)
+                cb.setChecked(name in self._settings.buffers)
+                cb.blockSignals(False)
 
-        self._rules_table.blockSignals(True)
-        self._rules_table.setRowCount(0)
-        for rule in self._settings.exclude_rules:
-            self._add_row(rule.pattern, rule.field, rule.enabled)
-        self._rules_table.blockSignals(False)
+            self._rules_table.blockSignals(True)
+            self._rules_table.setRowCount(0)
+            for rule in self._settings.exclude_rules:
+                self._add_row(rule.pattern, rule.field, rule.enabled)
+            self._rules_table.blockSignals(False)
 
-        self._stats_top_n_spin.setValue(self._settings.stats_top_n)
-        self._max_records_spin.setValue(self._settings.max_records)
+            self._stats_top_n_spin.setValue(self._settings.stats_top_n)
+            self._max_records_spin.setValue(self._settings.max_records)
+        finally:
+            self._suppress_autosave = False
 
         self._update_command_preview()
+
+    # ================================================================== auto-save
+
+    def _wire_autosave(self) -> None:
+        """Connect every user-edit signal to _auto_save. Programmatic
+        population in _load() is protected by self._suppress_autosave."""
+        # Theme is handled by _on_theme_combo_changed (fast path + save)
+        # — don't double-wire it here.
+        self._merge_cb.toggled.connect(self._auto_save)
+        self._timeline_filter_cb.toggled.connect(self._auto_save)
+        self._compact_rows_cb.toggled.connect(self._auto_save)
+        self._wrap_messages_cb.toggled.connect(self._auto_save)
+        # ADB path: editingFinished, not textChanged — saving on every
+        # keystroke would thrash settings.json (and validation already
+        # runs live via _on_adb_path_changed).
+        self._adb_path_edit.editingFinished.connect(self._auto_save)
+        for cb in self._buffer_cbs.values():
+            cb.toggled.connect(self._auto_save)
+        self._rules_table.itemChanged.connect(self._auto_save)
+        # Add / Delete don't go through itemChanged; wire them directly.
+        self._btn_add.clicked.connect(self._auto_save)
+        self._btn_delete.clicked.connect(self._auto_save)
+        self._stats_top_n_spin.valueChanged.connect(self._auto_save)
+        self._max_records_spin.valueChanged.connect(self._auto_save)
+
+    def _auto_save(self, *_args) -> None:
+        """Snapshot all widget values into AppSettings, write settings.json,
+        and notify MainWindow to re-apply. Called from every input's change
+        signal — cheap enough to run unconditionally."""
+        if self._suppress_autosave:
+            return
+        self._settings.theme = self._theme_combo.currentText().lower()
+        self._settings.merge_same_time_tag = self._merge_cb.isChecked()
+        self._settings.timeline_follows_filter = self._timeline_filter_cb.isChecked()
+        self._settings.compact_rows = self._compact_rows_cb.isChecked()
+        self._settings.wrap_messages = self._wrap_messages_cb.isChecked()
+        self._settings.adb_path = self._adb_path_edit.text().strip()
+        chosen = {name for name, cb in self._buffer_cbs.items() if cb.isChecked()}
+        self._settings.buffers = chosen if chosen else {"main"}
+        self._settings.exclude_rules = self._collect_rules()
+        self._settings.stats_top_n = self._stats_top_n_spin.value()
+        self._settings.max_records = self._max_records_spin.value()
+        self._settings.save()
+        self._adb_error_banner.setVisible(False)
+        self.settings_applied.emit()
+
+    def closeEvent(self, event) -> None:
+        # Safety net: an in-progress table editor or a focused QLineEdit
+        # may not have fired its commit signal yet when the user clicks
+        # the window's [X]. Do one last sweep so nothing slips away.
+        self._auto_save()
+        super().closeEvent(event)
 
     def _open_settings_folder(self) -> None:
         """Reveal the directory that holds settings.json in the OS file manager."""
@@ -479,22 +555,6 @@ class SettingsDialog(QDialog):
         self._settings.theme = theme
         self._settings.save()
         self.theme_changed.emit(theme)
-
-    def _on_accept(self) -> None:
-        self._settings.theme = self._theme_combo.currentText().lower()
-        self._settings.merge_same_time_tag = self._merge_cb.isChecked()
-        self._settings.timeline_follows_filter = self._timeline_filter_cb.isChecked()
-        self._settings.compact_rows = self._compact_rows_cb.isChecked()
-        self._settings.wrap_messages = self._wrap_messages_cb.isChecked()
-        self._settings.adb_path = self._adb_path_edit.text().strip()
-        chosen = {name for name, cb in self._buffer_cbs.items() if cb.isChecked()}
-        self._settings.buffers = chosen if chosen else {"main"}
-        self._settings.exclude_rules = self._collect_rules()
-        self._settings.stats_top_n = self._stats_top_n_spin.value()
-        self._settings.max_records = self._max_records_spin.value()
-        self._adb_error_banner.setVisible(False)
-        self.settings_applied.emit()
-        self.hide()
 
     def set_device(self, device: Optional[str]) -> None:
         self._device = device
@@ -534,7 +594,7 @@ class SettingsDialog(QDialog):
             self._adb_path_edit.setText(path)
 
     def _on_test_adb(self) -> None:
-        from .adb_reader import resolve_adb
+        from .adb_reader import NO_WINDOW_FLAGS, resolve_adb
         exe = resolve_adb(self._adb_path_edit.text())
         try:
             result = subprocess.run(
@@ -542,6 +602,7 @@ class SettingsDialog(QDialog):
                 capture_output=True,
                 text=True,
                 timeout=5,
+                **NO_WINDOW_FLAGS,
             )
             output = (result.stdout or result.stderr or "").strip()
             first_line = output.splitlines()[0] if output else "(no output)"

@@ -31,7 +31,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .app_settings import EXCLUDE_FIELDS, AppSettings, ExcludeRule, _profiles_dir
+from .app_settings import (
+    EXCLUDE_FIELDS,
+    PROFILE_SCHEMA_VERSION,
+    AppSettings,
+    ExcludeRule,
+    _migrate_profile,
+    _profiles_dir,
+)
 from .color_rules import COLOR_RULE_FIELDS, ColorRule
 
 _LEVEL_LABELS = {
@@ -241,6 +248,7 @@ class ColorsDialog(QDialog):
     """
 
     colors_applied = Signal()
+    profile_dirty_changed = Signal(bool)
 
     def __init__(
         self,
@@ -256,8 +264,15 @@ class ColorsDialog(QDialog):
         # _add_search_highlight_row runs during _load).
         self._search_fg_btn: Optional[ColorButton] = None
         self._search_bg_btn: Optional[ColorButton] = None
+        # Skip _mark_dirty during programmatic widget population in _load() /
+        # _load_profile() / row-rebuilds — itemChanged etc. fire for those too.
+        self._suppress_dirty = False
         self._build_ui()
         self._load()
+        # Render whatever dirty state was already on settings (e.g. a
+        # right-click rule add before the dialog was first opened).
+        self._update_profile_label()
+        self._refresh_dirty_buttons()
 
     # ================================================================== build
 
@@ -265,12 +280,13 @@ class ColorsDialog(QDialog):
         root = QVBoxLayout(self)
         root.setSpacing(10)
 
-        # Profile name banner
+        # Profile name banner — match the filter row's Tag/Text/Level
+        # styling: theme-default font and color, no inline overrides. The
+        # "Unsaved changes" tail in _update_profile_label is the only
+        # element that escapes the theme (dark red, by design).
         self._profile_name_label = QLabel()
         self._profile_name_label.setObjectName("profile_name_label")
-        self._profile_name_label.setStyleSheet(
-            "color: #555; font-size: 10px; padding: 1px 6px;"
-        )
+        self._profile_name_label.setTextFormat(Qt.RichText)
         root.addWidget(self._profile_name_label)
 
         # Scroll area for the collapsible sections
@@ -312,13 +328,17 @@ class ColorsDialog(QDialog):
         
         self._btn_load_profile = QPushButton("Load Profile…")
         self._btn_save_profile = QPushButton("Save Profile…")
+        # Save / Apply are styled by _refresh_dirty_buttons() — red+bold when
+        # there are uncommitted edits, plain otherwise. Earlier the Save
+        # button was unconditionally red; that's the bug being fixed here.
         bottom_row.addWidget(self._btn_load_profile)
         bottom_row.addWidget(self._btn_save_profile)
-        
+
         bottom_row.addStretch()
 
         btns = QDialogButtonBox(QDialogButtonBox.Apply | QDialogButtonBox.Close)
-        btns.button(QDialogButtonBox.Apply).clicked.connect(self._on_apply)
+        self._btn_apply = btns.button(QDialogButtonBox.Apply)
+        self._btn_apply.clicked.connect(self._on_apply)
         btns.button(QDialogButtonBox.Close).clicked.connect(self.hide)
         bottom_row.addWidget(btns)
         
@@ -326,6 +346,34 @@ class ColorsDialog(QDialog):
 
         self._btn_save_profile.clicked.connect(self._save_profile)
         self._btn_load_profile.clicked.connect(self._load_profile)
+
+        self._install_dirty_hooks()
+
+    # ------------------------------------------------------------------ dirty wiring
+
+    def _install_dirty_hooks(self) -> None:
+        """Connect every user-edit signal that should flag the profile as
+        having unsaved changes. Programmatic widget population in _load() is
+        protected by self._suppress_dirty."""
+        self._startup_tag_edit.textEdited.connect(self._mark_dirty)
+        self._startup_text_edit.textEdited.connect(self._mark_dirty)
+
+        for btn in self._level_fg_btns.values():
+            btn.color_changed.connect(self._mark_dirty)
+        for btn in self._level_bg_btns.values():
+            btn.color_changed.connect(self._mark_dirty)
+
+        # Tables: itemChanged catches pattern edits. Per-row cell widgets
+        # (checkboxes / combos / color buttons) are wired in _add_rule_row
+        # and _add_exclude_row below. Reorder + add/delete also dirty.
+        self._rules_table.itemChanged.connect(self._mark_dirty)
+        self._rules_table.row_moved.connect(self._mark_dirty)
+        self._btn_add.clicked.connect(self._mark_dirty)
+        self._btn_delete_rules.clicked.connect(self._mark_dirty)
+
+        self._exclude_table.itemChanged.connect(self._mark_dirty)
+        self._btn_add_ex.clicked.connect(self._mark_dirty)
+        self._btn_delete_ex.clicked.connect(self._mark_dirty)
 
     # ------------------------------------------------------------------ startup patterns
 
@@ -350,7 +398,7 @@ class ColorsDialog(QDialog):
             "Applied to the Tag / Text filter when the app launches. "
             "Saved with the color profile. CLI --tag / --text override these."
         )
-        hint.setStyleSheet("color: #888; font-size: 10px;")
+        hint.setProperty("hint", True)
         hint.setWordWrap(True)
         form.addRow("", hint)
 
@@ -449,7 +497,7 @@ class ColorsDialog(QDialog):
         hint = QLabel(
             "Tip: double-click Pattern to edit.  Right-click a color button to clear it."
         )
-        hint.setStyleSheet("color: #888; font-size: 10px;")
+        hint.setProperty("hint", True)
         layout.addLayout(btn_row)
         layout.addWidget(hint)
 
@@ -462,6 +510,15 @@ class ColorsDialog(QDialog):
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
+
+        scope_hint = QLabel(
+            "Per-profile excludes — combined with the global Settings list "
+            "when filtering."
+        )
+        scope_hint.setProperty("hint", True)
+        scope_hint.setContentsMargins(0, 0, 0, 4)
+        scope_hint.setWordWrap(True)
+        layout.addWidget(scope_hint)
 
         self._exclude_table = QTableWidget()
         self._exclude_table.setColumnCount(3)
@@ -502,29 +559,76 @@ class ColorsDialog(QDialog):
     # ================================================================== load / save
 
     def _update_profile_label(self) -> None:
-        name = self._settings.last_profile_name
-        self._profile_name_label.setText(
-            f"Profile: {name}" if name else "Profile: (none)"
+        name = self._settings.last_profile_name or "(none)"
+        # No inline color — let the theme paint it like Tag/Text/Level.
+        base = f"Profile: {name}"
+        if self._settings.profile_dirty:
+            base += (
+                "&nbsp;&nbsp;&nbsp;"
+                "<span style='color:#B00020; font-weight:bold;'>"
+                "Unsaved changes</span>"
+            )
+        self._profile_name_label.setText(base)
+
+    # ------------------------------------------------------------------ dirty API
+
+    def is_profile_dirty(self) -> bool:
+        return self._settings.profile_dirty
+
+    def set_profile_dirty(self, dirty: bool) -> None:
+        """Update profile-dirty state, refresh the label and the Save/Apply
+        button highlights, and notify listeners (MainWindow updates its
+        title bar)."""
+        if self._settings.profile_dirty == dirty:
+            return
+        self._settings.profile_dirty = dirty
+        self._update_profile_label()
+        self._refresh_dirty_buttons()
+        self.profile_dirty_changed.emit(dirty)
+
+    def _refresh_dirty_buttons(self) -> None:
+        """Highlight Save Profile and Apply in dark-red bold when there are
+        uncommitted edits; restore default styling when clean."""
+        style = (
+            "QPushButton { color: #B00020; font-weight: bold; }"
+            if self._settings.profile_dirty else ""
         )
+        self._btn_save_profile.setStyleSheet(style)
+        self._btn_apply.setStyleSheet(style)
+
+    def _mark_dirty(self, *_args) -> None:
+        """Slot wired to every user-edit signal in the dialog. Ignored while
+        _load() / row-rebuilds are populating widgets programmatically."""
+        if self._suppress_dirty:
+            return
+        if not self._settings.profile_dirty:
+            self.set_profile_dirty(True)
 
     def _load(self) -> None:
-        self._startup_tag_edit.setText(self._settings.startup_tag)
-        self._startup_text_edit.setText(self._settings.startup_text)
+        self._suppress_dirty = True
+        try:
+            self._startup_tag_edit.setText(self._settings.startup_tag)
+            self._startup_text_edit.setText(self._settings.startup_text)
 
-        for lvl, btn in self._level_fg_btns.items():
-            btn.set_color(self._settings.level_fg.get(lvl, ""))
-        for lvl, btn in self._level_bg_btns.items():
-            btn.set_color(self._settings.level_bg.get(lvl, ""))
+            for lvl, btn in self._level_fg_btns.items():
+                btn.set_color(self._settings.level_fg.get(lvl, ""))
+            for lvl, btn in self._level_bg_btns.items():
+                btn.set_color(self._settings.level_bg.get(lvl, ""))
 
-        self._rules_table.setRowCount(0)
-        self._add_search_highlight_row()
-        for rule in self._settings.color_rules:
-            self._add_rule_row(rule)
+            self._rules_table.setRowCount(0)
+            self._add_search_highlight_row()
+            for rule in self._settings.color_rules:
+                self._add_rule_row(rule)
 
-        self._exclude_table.setRowCount(0)
-        for rule in self._settings.exclude_rules:
-            self._add_exclude_row(rule)
+            self._exclude_table.setRowCount(0)
+            for rule in self._settings.profile_exclude_rules:
+                self._add_exclude_row(rule)
+        finally:
+            self._suppress_dirty = False
 
+        # _load() just rebuilds the widgets to match current settings — it
+        # does NOT change the dirty flag. Save Profile and Load Profile own
+        # the clean transitions; everything else stays dirty if it was.
         self._update_profile_label()
 
     def _on_apply(self) -> None:
@@ -545,8 +649,15 @@ class ColorsDialog(QDialog):
             self._settings.search_bg = self._search_bg_btn.color()
 
         self._settings.color_rules = self._collect_color_rules()
-        self._settings.exclude_rules = self._collect_exclude_rules()
+        # Per-project list — global self._settings.exclude_rules is untouched
+        # and is owned exclusively by the Settings dialog.
+        self._settings.profile_exclude_rules = self._collect_exclude_rules()
         self._settings.save()
+        # Apply commits the dialog's edits to settings.json — clear the
+        # uncommitted-edits highlight on Save / Apply / title-bar. (Note:
+        # the named profile FILE may still be stale if the user wants those
+        # changes persisted there too — they'd hit Save Profile for that.)
+        self.set_profile_dirty(False)
         self.colors_applied.emit()
 
     # ================================================================== row helpers
@@ -588,6 +699,7 @@ class ColorsDialog(QDialog):
         self._search_fg_btn.color_changed.connect(
             lambda _c: self._refresh_search_preview()
         )
+        self._search_fg_btn.color_changed.connect(self._mark_dirty)
         self._rules_table.setCellWidget(0, 3, self._search_fg_btn)
 
         # Col 4: Background — bound to settings.search_bg
@@ -595,6 +707,7 @@ class ColorsDialog(QDialog):
         self._search_bg_btn.color_changed.connect(
             lambda _c: self._refresh_search_preview()
         )
+        self._search_bg_btn.color_changed.connect(self._mark_dirty)
         self._rules_table.setCellWidget(0, 4, self._search_bg_btn)
 
         # Col 5: Row — empty placeholder (search is span-based, not row-based).
@@ -636,6 +749,9 @@ class ColorsDialog(QDialog):
         # squares under our dark stylesheet).
         on_wrap = _make_cell_checkbox(rule is None or rule.enabled)
         self._rules_table.setCellWidget(row, 0, on_wrap)
+        on_cb = on_wrap.findChild(QCheckBox)
+        if on_cb:
+            on_cb.toggled.connect(self._mark_dirty)
 
         # Col 1: Pattern — editable text, painted with the rule's colors as a preview.
         pat = QTableWidgetItem(rule.pattern if rule else "")
@@ -647,6 +763,7 @@ class ColorsDialog(QDialog):
         if rule and rule.field in COLOR_RULE_FIELDS:
             combo.setCurrentText(rule.field)
         combo.setFrame(False)
+        combo.currentTextChanged.connect(self._mark_dirty)
         self._rules_table.setCellWidget(row, 2, combo)
 
         # Col 3: Foreground — ColorButton (refresh preview on change)
@@ -654,6 +771,7 @@ class ColorsDialog(QDialog):
         fg_btn.color_changed.connect(
             lambda _c, b=fg_btn: self._refresh_rule_preview_for_btn(b)
         )
+        fg_btn.color_changed.connect(self._mark_dirty)
         self._rules_table.setCellWidget(row, 3, fg_btn)
 
         # Col 4: Background — ColorButton (refresh preview on change)
@@ -661,6 +779,7 @@ class ColorsDialog(QDialog):
         bg_btn.color_changed.connect(
             lambda _c, b=bg_btn: self._refresh_rule_preview_for_btn(b)
         )
+        bg_btn.color_changed.connect(self._mark_dirty)
         self._rules_table.setCellWidget(row, 4, bg_btn)
 
         # Col 5: Entire Row — real QCheckBox
@@ -672,6 +791,9 @@ class ColorsDialog(QDialog):
             ),
         )
         self._rules_table.setCellWidget(row, 5, row_wrap)
+        row_cb = row_wrap.findChild(QCheckBox)
+        if row_cb:
+            row_cb.toggled.connect(self._mark_dirty)
 
         self._refresh_rule_preview(row)
         self._rules_table.scrollToBottom()
@@ -684,6 +806,9 @@ class ColorsDialog(QDialog):
 
         on_wrap = _make_cell_checkbox(rule is None or rule.enabled)
         self._exclude_table.setCellWidget(row, 0, on_wrap)
+        on_cb = on_wrap.findChild(QCheckBox)
+        if on_cb:
+            on_cb.toggled.connect(self._mark_dirty)
 
         pat = QTableWidgetItem(rule.pattern if rule else "")
         self._exclude_table.setItem(row, 1, pat)
@@ -693,6 +818,7 @@ class ColorsDialog(QDialog):
         combo.addItems(list(EXCLUDE_FIELDS))
         combo.setCurrentText(rule.field if rule and rule.field in EXCLUDE_FIELDS else "TAG")
         combo.setFrame(False)
+        combo.currentTextChanged.connect(self._mark_dirty)
         self._exclude_table.setCellWidget(row, 2, combo)
 
         self._exclude_table.scrollToBottom()
@@ -843,9 +969,21 @@ class ColorsDialog(QDialog):
             return
         if not path.endswith(".json"):
             path += ".json"
+        # Level / search-highlight colors live in dedicated settings keys
+        # but are part of the visual "profile" — snapshot them too so loading
+        # a profile restores the full look, not just the rule list.
+        level_fg = {lvl: btn.color() for lvl, btn in self._level_fg_btns.items()}
+        level_bg = {lvl: btn.color() for lvl, btn in self._level_bg_btns.items()}
+        search_fg = self._search_fg_btn.color() if self._search_fg_btn else ""
+        search_bg = self._search_bg_btn.color() if self._search_bg_btn else ""
         data = {
+            "schema_version": PROFILE_SCHEMA_VERSION,
             "startup_tag": self._startup_tag_edit.text(),
             "startup_text": self._startup_text_edit.text(),
+            "level_fg": level_fg,
+            "level_bg": level_bg,
+            "search_fg": search_fg,
+            "search_bg": search_bg,
             "color_rules": [r.to_dict() for r in rules],
             "exclude_rules": [
                 {"pattern": r.pattern, "field": r.field, "enabled": r.enabled}
@@ -856,6 +994,7 @@ class ColorsDialog(QDialog):
             json.dump(data, fh, indent=2)
         self._settings.last_profile_name = Path(path).stem
         self._settings.save()
+        self.set_profile_dirty(False)
         self._update_profile_label()
 
     def _load_profile(self) -> None:
@@ -870,7 +1009,9 @@ class ColorsDialog(QDialog):
         try:
             with open(path, "r", encoding="utf-8") as fh:
                 data = json.load(fh)
-            
+
+            data = _migrate_profile(data)
+
             startup_tag = data.get("startup_tag", "")
             startup_text = data.get("startup_text", "")
             if not isinstance(startup_tag, str):
@@ -892,23 +1033,50 @@ class ColorsDialog(QDialog):
                 for r in data.get("exclude_rules", [])
                 if isinstance(r, dict)
             ]
+            # Level / search colors are optional — older profiles (saved before
+            # they were included) just keep the dialog's current values.
+            raw_level_fg = data.get("level_fg") if isinstance(data.get("level_fg"), dict) else {}
+            raw_level_bg = data.get("level_bg") if isinstance(data.get("level_bg"), dict) else {}
+            level_fg = {k: v for k, v in raw_level_fg.items() if isinstance(v, str)}
+            level_bg = {k: v for k, v in raw_level_bg.items() if isinstance(v, str)}
+            search_fg = data.get("search_fg") if isinstance(data.get("search_fg"), str) else None
+            search_bg = data.get("search_bg") if isinstance(data.get("search_bg"), str) else None
         except Exception as exc:
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.critical(self, "Load Error", str(exc))
             return
 
-        self._startup_tag_edit.setText(startup_tag)
-        self._startup_text_edit.setText(startup_text)
+        self._suppress_dirty = True
+        try:
+            self._startup_tag_edit.setText(startup_tag)
+            self._startup_text_edit.setText(startup_text)
 
-        self._rules_table.setRowCount(0)
-        self._add_search_highlight_row()
-        for rule in color_rules:
-            self._add_rule_row(rule)
+            for lvl, btn in self._level_fg_btns.items():
+                if lvl in level_fg:
+                    btn.set_color(level_fg[lvl])
+            for lvl, btn in self._level_bg_btns.items():
+                if lvl in level_bg:
+                    btn.set_color(level_bg[lvl])
 
-        self._exclude_table.setRowCount(0)
-        for rule in exclude_rules:
-            self._add_exclude_row(rule)
+            self._rules_table.setRowCount(0)
+            self._add_search_highlight_row()
+            for rule in color_rules:
+                self._add_rule_row(rule)
+            # _add_search_highlight_row created fresh buttons bound to current
+            # settings.search_fg/bg; override them with the profile values.
+            if search_fg is not None and self._search_fg_btn is not None:
+                self._search_fg_btn.set_color(search_fg)
+            if search_bg is not None and self._search_bg_btn is not None:
+                self._search_bg_btn.set_color(search_bg)
+            self._refresh_search_preview()
+
+            self._exclude_table.setRowCount(0)
+            for rule in exclude_rules:
+                self._add_exclude_row(rule)
+        finally:
+            self._suppress_dirty = False
 
         self._settings.last_profile_name = Path(path).stem
         self._settings.save()
+        self.set_profile_dirty(False)
         self._update_profile_label()

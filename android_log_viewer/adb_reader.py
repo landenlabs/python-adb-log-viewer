@@ -29,6 +29,14 @@ def _is_simple_tag(pattern: str) -> bool:
     return bool(_SIMPLE_TAG.match(pattern))
 
 
+# Suppress the console window that Windows creates for each adb subprocess
+# when the GUI is launched from a --windowed PyInstaller build (no parent
+# console). Spread as **NO_WINDOW_FLAGS into subprocess.run / Popen calls.
+NO_WINDOW_FLAGS: dict = (
+    {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
+)
+
+
 # ------------------------------------------------------------------
 # ADB executable resolution
 # ------------------------------------------------------------------
@@ -119,6 +127,7 @@ def list_devices(adb_exe: str = "adb") -> List[str]:
             capture_output=True,
             text=True,
             timeout=5,
+            **NO_WINDOW_FLAGS,
         )
         devices: List[str] = []
         for line in result.stdout.splitlines()[1:]:
@@ -169,6 +178,7 @@ class AdbReader(QThread):
                 # Binary mode: we decode each line ourselves so that stray
                 # non-UTF-8 bytes (e.g. UTF-16 BOM 0xFE/0xFF from some apps)
                 # are replaced with ? rather than raising UnicodeDecodeError.
+                **NO_WINDOW_FLAGS,
             )
             self.started_reading.emit()
 

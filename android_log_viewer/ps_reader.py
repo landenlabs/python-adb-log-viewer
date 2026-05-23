@@ -26,8 +26,9 @@ class PsReader(QThread):
         cmd += ["shell", "ps", "-A"]
 
         try:
+            from .adb_reader import NO_WINDOW_FLAGS
             result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=15
+                cmd, capture_output=True, text=True, timeout=15, **NO_WINDOW_FLAGS
             )
             names: Dict[str, str] = {}
             lines = result.stdout.splitlines()

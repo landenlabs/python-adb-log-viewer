@@ -35,7 +35,8 @@ class MemReader(QThread):
             cmd += ["-s", self.device]
         cmd += ["shell", _SHELL_CMD]
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            from .adb_reader import NO_WINDOW_FLAGS
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30, **NO_WINDOW_FLAGS)
             self.stats_ready.emit(_parse(result.stdout))
         except subprocess.TimeoutExpired:
             self.error_occurred.emit("Memory poll timed out (30 s).")

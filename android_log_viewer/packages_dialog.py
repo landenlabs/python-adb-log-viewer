@@ -234,7 +234,8 @@ class PackagesDialog(QDialog):
             cmd += ["-s", self._device]
         cmd += args
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+            from .adb_reader import NO_WINDOW_FLAGS
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=20, **NO_WINDOW_FLAGS)
             return result.returncode, result.stdout.strip(), result.stderr.strip()
         except Exception as exc:
             return -1, "", str(exc)

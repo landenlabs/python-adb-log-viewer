@@ -20,6 +20,21 @@ BUFFER_NAMES: List[str] = [name for name, _ in BUFFER_INFO]
 
 EXCLUDE_FIELDS = ("PID", "TAG", "MESSAGE")
 
+# Settings file schema version. Bumped only on INCOMPATIBLE layout changes
+# (key renames, restructuring, semantic shifts). Additive changes do NOT
+# require a bump — the "key in data" check in from_dict already handles
+# those. Migrators are chained in _migrate_settings; each upgrades data
+# in place from version N to N+1.
+#
+# History:
+#   1 = initial format (single exclude_rules list)
+#   2 = exclude_rules split into global + profile_exclude_rules
+SETTINGS_SCHEMA_VERSION = 2
+
+# Color profile (.json) schema version. Independent from settings — a saved
+# profile file from any earlier version of the app should still load.
+PROFILE_SCHEMA_VERSION = 1
+
 RECENT_CAP = 20
 
 # Limits — defaults and valid ranges for the user-configurable limits in
@@ -52,10 +67,171 @@ def _profiles_dir() -> Path:
     return _settings_path().parent / "color_profiles"
 
 
+# ----------------------------------------------------------------------
+# Schema migrations
+# ----------------------------------------------------------------------
+
+def _migrate_settings_v1_to_v2(data: dict) -> None:
+    """v1 had a single 'exclude_rules' list shared by the Settings and
+    Colors dialogs. v2 splits per-project rules into 'profile_exclude_rules'.
+    Duplicate the existing rules into the new list so nothing is dropped;
+    the user can prune either side independently afterwards."""
+    if "profile_exclude_rules" not in data:
+        data["profile_exclude_rules"] = list(data.get("exclude_rules", []))
+
+
+# Ordered chain of (from_version, migrator) — each migrator upgrades data
+# in place from version N to N+1. Add new migrators here as the schema
+# evolves; the loop in _migrate_settings will pick them up automatically.
+_SETTINGS_MIGRATORS = [
+    (1, _migrate_settings_v1_to_v2),
+]
+
+
+def _migrate_settings(data: dict) -> dict:
+    """Upgrade a settings-file dict from whatever version it claims to be
+    up to SETTINGS_SCHEMA_VERSION, applying each migrator in turn. A
+    missing 'schema_version' key is treated as v1 (the original format).
+    Files claiming a newer version than this build understands are read
+    best-effort with a warning — never silently downgraded, since that
+    would clobber data the newer build added."""
+    version = data.get("schema_version", 1)
+    if not isinstance(version, int) or version < 1:
+        version = 1
+    if version > SETTINGS_SCHEMA_VERSION:
+        import sys
+        print(
+            f"[android_log_viewer] settings.json schema_version={version} "
+            f"is newer than this build (max {SETTINGS_SCHEMA_VERSION}); "
+            "reading best-effort. Save will rewrite at the older version.",
+            file=sys.stderr,
+        )
+        return data
+    for from_v, migrate in _SETTINGS_MIGRATORS:
+        if version == from_v:
+            migrate(data)
+            version = from_v + 1
+    data["schema_version"] = SETTINGS_SCHEMA_VERSION
+    return data
+
+
+# ----------------------------------------------------------------------
+# Color profile (.json) migration + headless loader
+# ----------------------------------------------------------------------
+
+# Ordered chain of (from_version, migrator) for color profile files. Empty
+# for now; bump PROFILE_SCHEMA_VERSION and append a migrator here when an
+# incompatible change ships.
+_PROFILE_MIGRATORS: list = []
+
+
+def _migrate_profile(data: dict) -> dict:
+    """Upgrade a profile dict to PROFILE_SCHEMA_VERSION. Missing
+    'schema_version' is treated as v1 (the original format). Future-version
+    files are read best-effort with a warning."""
+    data = dict(data)
+    version = data.get("schema_version", 1)
+    if not isinstance(version, int) or version < 1:
+        version = 1
+    if version > PROFILE_SCHEMA_VERSION:
+        import sys
+        print(
+            f"[android_log_viewer] color profile schema_version={version} "
+            f"is newer than this build (max {PROFILE_SCHEMA_VERSION}); "
+            "reading best-effort.",
+            file=sys.stderr,
+        )
+        return data
+    for from_v, migrate in _PROFILE_MIGRATORS:
+        if version == from_v:
+            migrate(data)
+            version = from_v + 1
+    data["schema_version"] = PROFILE_SCHEMA_VERSION
+    return data
+
+
+def resolve_color_profile_path(name_or_path: str) -> Path:
+    """Resolve a --colors CLI argument to a Path.
+
+    Rules:
+      • Contains a path separator OR ends with '.json'  → treat as a path
+        (relative paths resolve against the current working directory).
+      • Anything else                                   → treat as a bare
+        profile name and look up '<profiles_dir>/<name>.json'.
+
+    The returned Path is NOT checked for existence — that's the caller's
+    job, so the caller can surface a useful error.
+    """
+    raw = name_or_path.strip()
+    has_sep = "/" in raw or "\\" in raw
+    looks_like_file = raw.lower().endswith(".json")
+    if has_sep or looks_like_file:
+        return Path(raw).expanduser()
+    return _profiles_dir() / f"{raw}.json"
+
+
+def load_color_profile_into_settings(settings: "AppSettings", path: Path) -> None:
+    """Read a color profile .json from `path` and apply every field to
+    `settings` in place. Mirrors the commit half of ColorsDialog._load_profile
+    but writes directly to settings instead of dialog widgets — used by the
+    --colors CLI flag and any other headless entry point.
+
+    Raises FileNotFoundError, json.JSONDecodeError, or OSError on failure.
+    The caller is responsible for surfacing those to the user.
+    """
+    from .color_rules import ColorRule, DEFAULT_LEVEL_FG, DEFAULT_LEVEL_BG
+
+    with open(path, "r", encoding="utf-8") as fh:
+        data = json.load(fh)
+    data = _migrate_profile(data)
+
+    startup_tag = data.get("startup_tag", "")
+    startup_text = data.get("startup_text", "")
+    if isinstance(startup_tag, str):
+        settings.startup_tag = startup_tag
+    if isinstance(startup_text, str):
+        settings.startup_text = startup_text
+
+    raw_level_fg = data.get("level_fg") if isinstance(data.get("level_fg"), dict) else {}
+    raw_level_bg = data.get("level_bg") if isinstance(data.get("level_bg"), dict) else {}
+    if raw_level_fg:
+        settings.level_fg = {**DEFAULT_LEVEL_FG, **{k: v for k, v in raw_level_fg.items() if isinstance(v, str)}}
+    if raw_level_bg:
+        settings.level_bg = {**DEFAULT_LEVEL_BG, **{k: v for k, v in raw_level_bg.items() if isinstance(v, str)}}
+
+    if isinstance(data.get("search_fg"), str):
+        settings.search_fg = data["search_fg"]
+    if isinstance(data.get("search_bg"), str):
+        settings.search_bg = data["search_bg"]
+
+    settings.color_rules = [
+        ColorRule.from_dict(r)
+        for r in data.get("color_rules", [])
+        if isinstance(r, dict)
+    ]
+    settings.profile_exclude_rules = [
+        ExcludeRule(
+            pattern=r.get("pattern", ""),
+            field=r.get("field", "TAG"),
+            enabled=bool(r.get("enabled", True)),
+        )
+        for r in data.get("exclude_rules", [])
+        if isinstance(r, dict)
+    ]
+
+    settings.last_profile_name = path.stem
+
+
 class AppSettings:
     def __init__(self) -> None:
         self.buffers: Set[str] = {"main"}
+        # Global exclusion list — edited via the Settings dialog. Not affected
+        # by color-profile load/save.
         self.exclude_rules: List[ExcludeRule] = []
+        # Per-project exclusion list — edited via the Colors dialog and
+        # saved/loaded as part of named color profiles. Persisted in
+        # settings.json so it survives a restart between profile saves.
+        self.profile_exclude_rules: List[ExcludeRule] = []
         self.theme: str = "light"
         # Persist level filter checkbox states
         self.level_filters: Set[str] = {"D", "I", "W", "E", "B"}
@@ -65,6 +241,9 @@ class AppSettings:
         self.level_bg: dict[str, str] = dict(DEFAULT_LEVEL_BG)
         self.color_rules: List[ColorRule] = []
         self.last_profile_name: str = ""
+        # Runtime-only: True when in-memory color/exclude state differs from
+        # the named profile file on disk. Not persisted across launches.
+        self.profile_dirty: bool = False
         self.merge_same_time_tag: bool = False
         self.timeline_follows_filter: bool = True
         self.compact_rows: bool = False
@@ -99,12 +278,17 @@ class AppSettings:
     def to_dict(self) -> dict:
         from .color_rules import ColorRule
         return {
+            "schema_version": SETTINGS_SCHEMA_VERSION,
             "buffers": sorted(self.buffers),
             "theme": self.theme,
             "level_filters": sorted(list(self.level_filters)),
             "exclude_rules": [
                 {"pattern": r.pattern, "field": r.field, "enabled": r.enabled}
                 for r in self.exclude_rules
+            ],
+            "profile_exclude_rules": [
+                {"pattern": r.pattern, "field": r.field, "enabled": r.enabled}
+                for r in self.profile_exclude_rules
             ],
             "level_fg": self.level_fg,
             "level_bg": self.level_bg,
@@ -139,6 +323,10 @@ class AppSettings:
     @classmethod
     def from_dict(cls, data: dict) -> "AppSettings":
         from .color_rules import ColorRule, DEFAULT_LEVEL_FG, DEFAULT_LEVEL_BG
+        # Upgrade the dict in place to the current schema before reading
+        # any keys. Each migrator is responsible for renames / restructures
+        # so the loop below can stay simple "is this key present?" checks.
+        data = _migrate_settings(dict(data))
         s = cls()
         if "buffers" in data:
             parsed = set(data["buffers"])
@@ -156,6 +344,16 @@ class AppSettings:
                     enabled=bool(r.get("enabled", True)),
                 )
                 for r in data["exclude_rules"]
+                if isinstance(r, dict)
+            ]
+        if "profile_exclude_rules" in data:
+            s.profile_exclude_rules = [
+                ExcludeRule(
+                    pattern=r.get("pattern", ""),
+                    field=r.get("field", "TAG"),
+                    enabled=bool(r.get("enabled", True)),
+                )
+                for r in data["profile_exclude_rules"]
                 if isinstance(r, dict)
             ]
         if "level_fg" in data and isinstance(data["level_fg"], dict):

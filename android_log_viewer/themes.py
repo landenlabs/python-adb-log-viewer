@@ -134,6 +134,10 @@ QPushButton#collapsible_header:checked {{
     color: {L_TEXT};
 }}
 QPushButton#collapsible_header:hover {{ background: #d5d5d5; }}
+QLabel[hint="true"] {{
+    color: #4a5560;
+    font-size: 11px;
+}}
 """
 
 DARK_QSS = f"""
@@ -276,6 +280,10 @@ QToolTip {{
     background-color: #3c3c3c;
     color: {D_TEXT_HI};
     border: 1px solid {D_BORDER};
+}}
+QLabel[hint="true"] {{
+    color: #b0b8c0;
+    font-size: 11px;
 }}
 """
 
