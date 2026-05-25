@@ -210,12 +210,13 @@ class CollapsibleBox(QWidget):
     def __init__(self, title: str, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._is_expanded = True
+        self._title = title
 
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
         self._layout.setSpacing(0)
 
-        self._header = QPushButton(f"▼  {title}")
+        self._header = QPushButton()
         self._header.setObjectName("collapsible_header")
         self._header.setCheckable(True)
         self._header.setChecked(True)
@@ -227,12 +228,21 @@ class CollapsibleBox(QWidget):
         self._content_layout.setContentsMargins(4, 8, 4, 8)
         self._layout.addWidget(self._content)
 
+        self._refresh_header()
+
     def toggle(self) -> None:
         self._is_expanded = not self._is_expanded
         self._content.setVisible(self._is_expanded)
         self._content.setMaximumHeight(16777215 if self._is_expanded else 0)
-        title = self._header.text()[3:]
-        self._header.setText(f"{'▼' if self._is_expanded else '▶'}  {title}")
+        self._refresh_header()
+
+    def set_title(self, title: str) -> None:
+        self._title = title
+        self._refresh_header()
+
+    def _refresh_header(self) -> None:
+        arrow = "▼" if self._is_expanded else "▶"
+        self._header.setText(f"{arrow}  {self._title}")
 
     def add_widget(self, widget: QWidget) -> None:
         self._content_layout.addWidget(widget)
@@ -348,6 +358,30 @@ class ColorsDialog(QDialog):
         self._btn_load_profile.clicked.connect(self._load_profile)
 
         self._install_dirty_hooks()
+
+        # Keep the section titles in sync with table row counts ("Color
+        # Rules [N]" / "Exclusion Rules [N]"). Model signals fire for every
+        # path that adds or removes rows — Add/Delete buttons, _load(),
+        # _load_profile(), drag-reorder — so no per-callsite updates are
+        # needed.
+        rules_model = self._rules_table.model()
+        rules_model.rowsInserted.connect(self._update_rules_title)
+        rules_model.rowsRemoved.connect(self._update_rules_title)
+        exclude_model = self._exclude_table.model()
+        exclude_model.rowsInserted.connect(self._update_exclude_title)
+        exclude_model.rowsRemoved.connect(self._update_exclude_title)
+        self._update_rules_title()
+        self._update_exclude_title()
+
+    def _update_rules_title(self) -> None:
+        # Pinned "Search highlight" row isn't a user-defined rule.
+        count = self._rules_table.rowCount() - self._rules_table.pinned_top
+        self._rules_box.set_title(f"Color Rules [{count}]")
+
+    def _update_exclude_title(self) -> None:
+        self._exclude_box.set_title(
+            f"Exclusion Rules [{self._exclude_table.rowCount()}]"
+        )
 
     # ------------------------------------------------------------------ dirty wiring
 
