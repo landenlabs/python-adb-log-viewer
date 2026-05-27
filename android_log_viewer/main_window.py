@@ -1290,6 +1290,19 @@ class MainWindow(QMainWindow):
         independently and combined here at the consumption boundary."""
         return list(self._settings.exclude_rules) + list(self._settings.profile_exclude_rules)
 
+    def _push_stats_exclude_patterns(self) -> None:
+        if self._stats_dialog is None:
+            return
+        patterns = []
+        for rule in self._active_exclude_rules():
+            if not rule.enabled or not rule.pattern or rule.field != "TAG":
+                continue
+            try:
+                patterns.append(_re.compile(rule.pattern, _re.IGNORECASE))
+            except _re.error:
+                patterns.append(_re.compile(_re.escape(rule.pattern), _re.IGNORECASE))
+        self._stats_dialog.set_exclude_tag_patterns(patterns)
+
     # ================================================================== timeline filter
     def _schedule_timeline_filter_rebuild(self) -> None:
         if not self._timeline_filter_timer.isActive():
@@ -1512,6 +1525,7 @@ class MainWindow(QMainWindow):
         existing.append(ExcludeRule(pattern=pattern, field="TAG", enabled=True))
         self._settings.save()
         self._proxy.set_exclude_rules(self._active_exclude_rules())
+        self._push_stats_exclude_patterns()
         self._update_settings_button_label()
         # Settings.json now diverges from the named profile file on disk.
         if self._colors_dialog:
@@ -1751,6 +1765,7 @@ class MainWindow(QMainWindow):
     def _apply_settings(self) -> None:
         apply_theme(self._settings.theme)
         self._proxy.set_exclude_rules(self._active_exclude_rules())
+        self._push_stats_exclude_patterns()
         self._model.set_merge_enabled(self._settings.merge_same_time_tag)
         self._model.set_max_records(self._settings.max_records)
         self._stats.top_n = self._settings.stats_top_n
@@ -1816,6 +1831,7 @@ class MainWindow(QMainWindow):
         if self._stats_dialog is None:
             self._stats_dialog = StatsDialog(parent=self)
             self._stats_dialog.filter_applied.connect(self._on_stats_filter_applied)
+            self._stats_dialog.exclude_tags_requested.connect(self._on_stats_exclude_tags_requested)
             self._track_dialog(self._stats_dialog, self._act_stats)
         if not self._stats_dialog.isVisible():
             device_text = self._device_combo.currentText()
@@ -1823,11 +1839,13 @@ class MainWindow(QMainWindow):
                 device_text if not device_text.startswith("(") else None
             )
             self._stats_dialog.set_adb_exe(self._adb_exe())
+            self._push_stats_exclude_patterns()
             self._stats_dialog.refresh(self._stats)
         self._toggle_dialog(self._stats_dialog)
 
     def _refresh_stats_dialog_if_visible(self) -> None:
         if self._stats_dialog and self._stats_dialog.isVisible():
+            self._push_stats_exclude_patterns()
             self._stats_dialog.refresh(self._stats)
 
     def _on_stats_filter_applied(self, pids: Set[str], tags: Set[str]) -> None:
@@ -1836,6 +1854,40 @@ class MainWindow(QMainWindow):
         self._update_stats_button_label()
         self._update_status()
         self._rebuild_timeline_filter()
+
+    def _on_stats_exclude_tags_requested(self, tags: Set[str]) -> None:
+        from .app_settings import ExcludeRule
+        existing = self._settings.profile_exclude_rules
+        added: list[str] = []
+        skipped: list[str] = []
+        for tag in sorted(tags):
+            pattern = f"^{_re.escape(tag)}$"
+            if any(r.pattern == pattern and r.field == "TAG" for r in existing):
+                skipped.append(tag)
+                continue
+            existing.append(ExcludeRule(pattern=pattern, field="TAG", enabled=True))
+            added.append(tag)
+        if not added:
+            self.statusBar().showMessage(
+                f"Exclude rule already exists for selected tag(s): {len(skipped)}", 3000
+            )
+            return
+        self._settings.save()
+        self._proxy.set_exclude_rules(self._active_exclude_rules())
+        self._push_stats_exclude_patterns()
+        self._update_settings_button_label()
+        if self._colors_dialog:
+            self._colors_dialog.set_profile_dirty(True)
+            if self._colors_dialog.isVisible():
+                self._colors_dialog._load()
+        else:
+            self._settings.profile_dirty = True
+        self._update_window_title()
+        self._rebuild_timeline_filter()
+        msg = f"Exclude rule added for {len(added)} tag(s)"
+        if skipped:
+            msg += f" ({len(skipped)} already existed)"
+        self.statusBar().showMessage(msg, 3000)
 
     def _update_stats_button_label(self) -> None:
         pids = self._stats_dialog.active_pids if self._stats_dialog else set()
@@ -1928,6 +1980,7 @@ class MainWindow(QMainWindow):
         # The Colors dialog's Apply may have changed profile_exclude_rules —
         # push the new union into the proxy and the filter view.
         self._proxy.set_exclude_rules(self._active_exclude_rules())
+        self._push_stats_exclude_patterns()
         if self._filter_view is not None:
             self._filter_view.apply_exclude_rules(self._active_exclude_rules())
         self._rebuild_timeline_filter()

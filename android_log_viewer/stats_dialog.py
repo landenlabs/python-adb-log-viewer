@@ -4,6 +4,7 @@ import re
 from typing import Dict, List, Optional, Set, Tuple
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -61,6 +62,7 @@ class StatsDialog(QDialog):
     """
 
     filter_applied = Signal(set, set)   # (Set[str] pids, Set[str] tags)
+    exclude_tags_requested = Signal(set)   # Set[str] tags to add to exclude rules
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -72,6 +74,8 @@ class StatsDialog(QDialog):
         self._proc_names: Dict[str, str] = {}
         self._active_pids: Set[str] = set()
         self._active_tags: Set[str] = set()
+        self._exclude_tag_patterns: List[re.Pattern] = []
+        self._excluded_brush = QBrush(QColor("darkred"))
         self._tracker: Optional[StatsTracker] = None
         self._ps_reader: Optional[PsReader] = None
         self._device: Optional[str] = None
@@ -204,7 +208,20 @@ class StatsDialog(QDialog):
         self._tag_table.horizontalHeader().setStretchLastSection(True)
         layout.addWidget(self._tag_table)
 
+        # Per-table action row (Save Exclude for selected tags)
+        tag_btn_row = QHBoxLayout()
+        tag_btn_row.setSpacing(8)
+        self._btn_save_exclude = QPushButton("Save Exclude")
+        self._btn_save_exclude.setToolTip(
+            "Add selected tags to the exclude rules list\n"
+            "(same as right-clicking 'Save exclude rule for tag…' in the main viewer)."
+        )
+        tag_btn_row.addWidget(self._btn_save_exclude)
+        tag_btn_row.addStretch()
+        layout.addLayout(tag_btn_row)
+
         self._tag_filter.textChanged.connect(self._apply_tag_filter)
+        self._btn_save_exclude.clicked.connect(self._on_save_exclude_clicked)
         return grp
 
     # ================================================================== populate
@@ -248,7 +265,28 @@ class StatsDialog(QDialog):
 
         self._tag_table.setSortingEnabled(True)
         _restore_selection(self._tag_table, prev_sel, col=0)
+        self._apply_excluded_tag_colors()
         self._apply_tag_filter()
+
+    def set_exclude_tag_patterns(self, patterns: List[re.Pattern]) -> None:
+        """Patterns used to mark tag rows already covered by an exclude rule."""
+        self._exclude_tag_patterns = list(patterns)
+        self._apply_excluded_tag_colors()
+
+    def _tag_is_excluded(self, tag: str) -> bool:
+        return any(p.search(tag) for p in self._exclude_tag_patterns)
+
+    def _apply_excluded_tag_colors(self) -> None:
+        n_cols = self._tag_table.columnCount()
+        default_brush = self._tag_table.palette().text()
+        for row in range(self._tag_table.rowCount()):
+            tag_item = self._tag_table.item(row, 0)
+            tag = tag_item.text() if tag_item else ""
+            brush = self._excluded_brush if self._tag_is_excluded(tag) else default_brush
+            for col in range(n_cols):
+                item = self._tag_table.item(row, col)
+                if item is not None:
+                    item.setForeground(brush)
 
     # ================================================================== selection helpers
 
@@ -328,6 +366,12 @@ class StatsDialog(QDialog):
         self._active_tags = self._selected_tags()
         self.filter_applied.emit(self._active_pids, self._active_tags)
         self._update_status_label()
+
+    def _on_save_exclude_clicked(self) -> None:
+        tags = self._selected_tags()
+        if not tags:
+            return
+        self.exclude_tags_requested.emit(tags)
 
     def _on_clear_filter_clicked(self) -> None:
         self._pid_table.clearSelection()
