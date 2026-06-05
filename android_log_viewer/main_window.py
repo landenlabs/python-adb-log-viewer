@@ -1455,6 +1455,37 @@ class MainWindow(QMainWindow):
             )
         else:
             menu.addAction("Copy message", lambda: QApplication.clipboard().setText(rec.message))
+
+        # Scan for URLs (http/https) in the row's message text
+        import re
+        import webbrowser
+        raw_urls = re.findall(r"https?://[^\s\"'<>]+", _copy_msg)
+        urls = []
+        for url in raw_urls:
+            # Strip trailing punctuation commonly appended to URLs in text
+            while url and url[-1] in ".,;:?!)'}]":
+                url = url[:-1]
+            if url and url not in urls:
+                urls.append(url)
+
+        if urls:
+            menu.addSeparator()
+            if len(urls) == 1:
+                url_to_copy = urls[0]
+                display_url = url_to_copy[:50] + "..." if len(url_to_copy) > 53 else url_to_copy
+                menu.addAction(f"Copy URL ({display_url})", lambda u=url_to_copy: QApplication.clipboard().setText(u))
+                menu.addAction(f"Open URL ({display_url})", lambda u=url_to_copy: webbrowser.open(u))
+            else:
+                copy_menu = menu.addMenu("Copy URL")
+                for u in urls:
+                    display_url = u[:50] + "..." if len(u) > 53 else u
+                    copy_menu.addAction(display_url, lambda val=u: QApplication.clipboard().setText(val))
+                
+                open_menu = menu.addMenu("Open URL")
+                for u in urls:
+                    display_url = u[:50] + "..." if len(u) > 53 else u
+                    open_menu.addAction(display_url, lambda val=u: webbrowser.open(val))
+
         menu.addSeparator()
         if rec.level == "B":
             menu.addAction(
