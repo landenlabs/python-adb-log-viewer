@@ -11,12 +11,14 @@ jobs:
       matrix:
         include:
           - os: macos-latest
-            artifact: android-log-viewer
+            artifact: android-log-viewer-macos.zip
+            onefile_flag: ""
             icon_flag: --icon log-viewer.icns
             data_sep: ":"
             version_flag: ""
           - os: windows-latest
             artifact: android-log-viewer.exe
+            onefile_flag: --onefile
             icon_flag: --icon log-viewer.ico
             data_sep: ";"
             version_flag: --version-file windows_version_info.py
@@ -36,7 +38,7 @@ jobs:
       - name: Build
         run: >-
           pyinstaller
-          --onefile --windowed
+          ${{ matrix.onefile_flag }} --windowed
           --name android-log-viewer
           ${{ matrix.icon_flag }}
           ${{ matrix.version_flag }}
@@ -45,6 +47,13 @@ jobs:
           --add-data "bg-dark.jpg${{ matrix.data_sep }}."
           --add-data "bg-light.jpg${{ matrix.data_sep }}."
           main.py
+
+      # macOS --windowed always builds a .app bundle (onedir under the hood);
+      # --onefile there is deprecated (PyInstaller warns) and produces a bare
+      # executable with no Info.plist, so the Dock icon reverts once quit.
+      - name: Zip macOS app bundle
+        if: runner.os == 'macOS'
+        run: ditto -c -k --sequesterRsrc --keepParent "dist/android-log-viewer.app" "dist/android-log-viewer-macos.zip"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -68,5 +77,5 @@ jobs:
         with:
           generate_release_notes: true
           files: |
-            artifacts/android-log-viewer-macos-latest/android-log-viewer
+            artifacts/android-log-viewer-macos-latest/android-log-viewer-macos.zip
             artifacts/android-log-viewer-windows-latest/android-log-viewer.exe
