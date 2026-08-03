@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Entry point: python main.py"""
+"""Entry point: python adb-log-viewer.py"""
 import argparse
 import sys
 

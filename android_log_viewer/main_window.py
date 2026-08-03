@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
 )
 
 from .adb_reader import AdbReader, check_adb, find_adb_on_path, list_devices, parse_line, resolve_adb
-from .version import __version__
+from . import __version__
 from .app_settings import AppSettings, RECENT_CAP
 from .colors_dialog import ColorsDialog
 from .constants import LEVEL_NAMES, LEVELS, MAX_RECORDS, PRUNE_SIZE

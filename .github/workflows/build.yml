@@ -46,7 +46,7 @@ jobs:
           --add-data "landen_labs_about_400.gif${{ matrix.data_sep }}."
           --add-data "bg-dark.jpg${{ matrix.data_sep }}."
           --add-data "bg-light.jpg${{ matrix.data_sep }}."
-          main.py
+          adb-log-viewer.py
 
       # macOS --windowed always builds a .app bundle (onedir under the hood);
       # --onefile there is deprecated (PyInstaller warns) and produces a bare

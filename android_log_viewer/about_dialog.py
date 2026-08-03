@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 
 from .icons import app_icon
 from .resources import resource_path
-from .version import __version__
+from . import __version__
 
 
 def _gif_path() -> Path:
@@ -27,7 +27,7 @@ def _gif_path() -> Path:
 
 
 def _build_date() -> str:
-    target = Path(__file__).parent / "version.py"
+    target = Path(__file__).parent / "__init__.py"
     try:
         return datetime.fromtimestamp(os.path.getmtime(target)).strftime("%Y-%m-%d")
     except OSError:

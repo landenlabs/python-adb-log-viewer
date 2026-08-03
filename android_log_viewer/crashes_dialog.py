@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import html
 import re
 from dataclasses import dataclass, field
@@ -409,8 +410,50 @@ class CrashesDialog(QDialog):
     def showEvent(self, event) -> None:  # noqa: N802 — Qt override
         # Populate the list on first show (and any re-show), since feed_records
         # skips refresh while the dialog is hidden to avoid wasted work.
+        self._dedupe_traces()
         self.refresh()
         super().showEvent(event)
+
+    # Duplicate detection compares only this many leading characters of the
+    # trace body — full stack traces can be huge, and the leading text (the
+    # exception header + top frames) is enough to identify a repeat crash,
+    # ignoring timestamp (and any other key field).
+    _HASH_PREFIX_LEN = 512
+
+    @classmethod
+    def _trace_hash(cls, trace: CrashTrace) -> str:
+        body = "\n".join(rec.message for rec in trace.records)
+        prefix = body[: cls._HASH_PREFIX_LEN]
+        return hashlib.sha256(prefix.encode("utf-8", "ignore")).hexdigest()
+
+    def _dedupe_traces(self, emit: bool = True) -> bool:
+        """Drop promoted traces whose message-body hash duplicates an
+        earlier trace's. Returns True if any trace was dropped."""
+        seen: Dict[str, CrashKey] = {}
+        keep_order: List[CrashKey] = []
+        drop_records: List[LogRecord] = []
+        removed = False
+        for key in self._promoted_order:
+            tr = self._traces.get(key)
+            if tr is None:
+                continue
+            h = self._trace_hash(tr)
+            if h in seen:
+                drop_records.extend(tr.records)
+                self._traces.pop(key, None)
+                removed = True
+            else:
+                seen[h] = key
+                keep_order.append(key)
+        if not removed:
+            return False
+        self._promoted_order = keep_order
+        for rec in drop_records:
+            rec.is_crash = False
+        if emit:
+            self.count_changed.emit(self.crash_count())
+            self.flags_changed.emit()
+        return True
 
     def reset_traces(self) -> None:
         self._traces.clear()
@@ -463,7 +506,9 @@ class CrashesDialog(QDialog):
                         r.is_crash = True
                     any_change = True
                     newly_promoted += 1
-        if newly_promoted:
+        removed = self._dedupe_traces(emit=False)
+        any_change = any_change or removed
+        if newly_promoted or removed:
             self.count_changed.emit(self.crash_count())
         if any_change and self.isVisible():
             self.refresh()

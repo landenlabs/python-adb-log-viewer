@@ -91,7 +91,9 @@ A fast, cross-platform **ADB logcat viewer** built with Python and PySide6. Stre
 git clone https://github.com/landenlabs/python-adb-log-viewer.git
 cd python-adb-log-viewer
 pip install -r requirements.txt
-python3 main.py
+python3 adb-log-viewer.py
+# or, since it's executable:
+./adb-log-viewer.py
 ```
 
 Or as a module:
@@ -251,9 +253,9 @@ python-adb-log-viewer/
 │   ├── stats_dialog.py        # Statistics and filter dialog
 │   ├── themes.py              # Qt stylesheet themes
 │   ├── timeline_widget.py     # Timeline bar-chart widget
-│   └── version.py             # Version string
+│   └── __init__.py            # Package init; holds __version__
 ├── screens/                   # Screenshot assets used in this README
-├── main.py                    # Entry point
+├── adb-log-viewer.py          # Entry point
 ├── log-viewer.png             # App icon source (401 × 400)
 ├── log-viewer.icns            # macOS icon bundle
 ├── log-viewer.ico             # Windows icon (6 sizes: 16 – 256 px)

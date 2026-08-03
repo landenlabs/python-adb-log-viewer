@@ -10,6 +10,6 @@ python -m PyInstaller ^
   --add-data "log-viewer.png;." ^
   --add-data "log-viewer.ico;." ^
   --add-data "landen_labs_about_400.gif;." ^
-  main.py || exit /b 1
+  adb-log-viewer.py || exit /b 1
 
 echo Built: dist\ll-log-viewer.exe
