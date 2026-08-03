@@ -3,4 +3,4 @@
 # Copyright (c) 2026 LanDen Labs - Dennis Lang
 # https://landenlabs.com
 # ----------------------------------------------------------------------
-__version__ = "6.07.10"
+__version__ = "6.08.01"
