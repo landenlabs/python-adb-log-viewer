@@ -110,6 +110,8 @@ class MainWindow(QMainWindow):
         self._reader: Optional[AdbReader] = None
         self._auto_scroll = True
         self._next_row_id = 1
+        self._last_bookmark_selection_row: Optional[int] = None
+        self._last_bookmark_row_id: Optional[int] = None
 
         self._model = LogModel()
         self._proxy = LogFilterProxy()
@@ -2144,7 +2146,30 @@ class MainWindow(QMainWindow):
         )
         if rec is None:
             return
-        if rec.level == "B":
+
+        selection_unchanged = idx.row() == self._last_bookmark_selection_row
+        last_bookmark_src_row = (
+            self._model.find_row_for_row_id(self._last_bookmark_row_id)
+            if self._last_bookmark_row_id is not None
+            else -1
+        )
+        more_rows_below_last_bookmark = (
+            0 <= last_bookmark_src_row < self._model.rowCount() - 1
+        )
+
+        self._last_bookmark_selection_row = idx.row()
+
+        if (
+            selection_unchanged
+            and self._last_bookmark_row_id is not None
+            and more_rows_below_last_bookmark
+        ):
+            bottom_proxy_row = self._proxy.rowCount() - 1
+            src_row = self._proxy.mapToSource(
+                self._proxy.index(bottom_proxy_row, 0)
+            ).row()
+            self._add_bookmark_at_source_row(src_row)
+        elif rec.level == "B":
             self._remove_bookmark_for_row_id(rec.row_id)
         else:
             src_row = self._proxy.mapToSource(self._proxy.index(idx.row(), 0)).row()
@@ -2156,11 +2181,14 @@ class MainWindow(QMainWindow):
         new_row = self._model.insert_bookmark_after(source_row, row_id)
         if new_row < 0:
             return
+        self._last_bookmark_row_id = row_id
         self._refresh_bookmarks_dialog_if_visible()
         self.statusBar().showMessage("Bookmark added.", 2000)
 
     def _remove_bookmark_for_row_id(self, row_id: int) -> None:
         if self._model.remove_bookmark_row(row_id):
+            if self._last_bookmark_row_id == row_id:
+                self._last_bookmark_row_id = None
             self._refresh_bookmarks_dialog_if_visible()
             self.statusBar().showMessage("Bookmark removed.", 2000)
 
