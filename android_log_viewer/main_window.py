@@ -357,6 +357,7 @@ class MainWindow(QMainWindow):
 
         # -- timeline
         self._timeline = TimelineWidget()
+        self._timeline.setVisible(self._settings.timeline_visible)
         splitter.addWidget(self._timeline)
         splitter.setStretchFactor(0, 6)
         splitter.setStretchFactor(1, 1)
@@ -486,7 +487,12 @@ class MainWindow(QMainWindow):
         self._act_packages = QAction(app_icon("packages"), "Pkgs", self)
         self._act_packages.setToolTip("List installed 3rd-party packages")
 
-        self._btn_filter_view = QPushButton("View")
+        self._act_view_timeline = QAction("Timeline", self)
+        self._act_view_timeline.setCheckable(True)
+        self._act_view_timeline.setChecked(self._settings.timeline_visible)
+        self._act_view_timeline.setToolTip("Show or hide the bottom timeline")
+
+        self._btn_filter_view = QPushButton("Viewer")
         self._btn_filter_view.setIcon(app_icon("view"))
         self._btn_filter_view.setToolTip("Open a second filtered log view")
         tb.addWidget(self._btn_filter_view)
@@ -508,6 +514,7 @@ class MainWindow(QMainWindow):
         tb.addWidget(self._btn_crashes)
 
         self._btn_colors = QPushButton("Colors")
+        self._btn_colors.setIcon(app_icon("colors"))
         tb.addWidget(self._btn_colors)
 
         self._btn_settings = QPushButton("Config")
@@ -540,6 +547,9 @@ class MainWindow(QMainWindow):
         tools_menu.addAction(self._act_memory)
         tools_menu.addAction(self._act_network)
         tools_menu.addAction(self._act_packages)
+
+        view_menu = mb.addMenu("&View")
+        view_menu.addAction(self._act_view_timeline)
 
     def _build_filter_bar(self) -> QWidget:
         frame = QFrame()
@@ -868,6 +878,7 @@ class MainWindow(QMainWindow):
         self._act_memory.triggered.connect(self._show_mem_dialog)
         self._act_network.triggered.connect(self._show_net_dialog)
         self._act_packages.triggered.connect(self._show_packages_dialog)
+        self._act_view_timeline.toggled.connect(self._on_view_timeline_toggled)
         self._btn_filter_view.clicked.connect(self._show_filter_view)
         self._btn_bookmarks.clicked.connect(self._show_bookmarks_dialog)
         self._btn_crashes.clicked.connect(self._show_crashes_dialog)
@@ -1343,6 +1354,14 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         self._rebuild_timeline_filter()
+
+    def _on_view_timeline_toggled(self, checked: bool) -> None:
+        self._settings.timeline_visible = bool(checked)
+        try:
+            self._settings.save()
+        except Exception:
+            pass
+        self._timeline.setVisible(checked)
 
     def _on_manual_scroll(self) -> None:
         sb = self._table.verticalScrollBar()

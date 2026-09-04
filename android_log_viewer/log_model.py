@@ -110,7 +110,7 @@ class LogModel(QAbstractTableModel):
             if col == COL_TIME:
                 return rec.timestamp
             if col == COL_PID:     return rec.pid
-            if col == COL_TID:     return rec.tid
+            if col == COL_TID:     return "pid" if rec.tid == rec.pid else rec.tid
             if col == COL_LEVEL:   return rec.level
             if col == COL_TAG:     return rec.tag
             if col == COL_MSG:

@@ -246,6 +246,7 @@ class AppSettings:
         self.profile_dirty: bool = False
         self.merge_same_time_tag: bool = False
         self.timeline_follows_filter: bool = True
+        self.timeline_visible: bool = True
         self.compact_rows: bool = False
         self.wrap_messages: bool = False
         self.adb_path: str = ""   # empty = use platform default (adb / adb.exe)
@@ -296,6 +297,7 @@ class AppSettings:
             "last_profile_name": self.last_profile_name,
             "merge_same_time_tag": self.merge_same_time_tag,
             "timeline_follows_filter": self.timeline_follows_filter,
+            "timeline_visible": self.timeline_visible,
             "compact_rows": self.compact_rows,
             "wrap_messages": self.wrap_messages,
             "adb_path": self.adb_path,
@@ -372,6 +374,8 @@ class AppSettings:
             s.merge_same_time_tag = bool(data["merge_same_time_tag"])
         if "timeline_follows_filter" in data:
             s.timeline_follows_filter = bool(data["timeline_follows_filter"])
+        if "timeline_visible" in data:
+            s.timeline_visible = bool(data["timeline_visible"])
         if "compact_rows" in data:
             s.compact_rows = bool(data["compact_rows"])
         if "wrap_messages" in data:

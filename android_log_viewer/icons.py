@@ -9,9 +9,10 @@ missing entry as "no icon".
 
 from __future__ import annotations
 
-from typing import Dict
+from typing import Callable, Dict
 
-from PySide6.QtGui import QIcon
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QStyle
 
 # Logical name -> StandardPixmap. Add here once; toolbar and dialogs read
@@ -32,9 +33,50 @@ _ICON_MAP: Dict[str, QStyle.StandardPixmap] = {
     "about":     QStyle.SP_MessageBoxQuestion,
 }
 
+# Rainbow wedge colors, drawn clockwise starting at 12 o'clock.
+_RAINBOW = [
+    "#E53935",  # red
+    "#FB8C00",  # orange
+    "#FDD835",  # yellow
+    "#43A047",  # green
+    "#1E88E5",  # blue
+    "#8E24AA",  # violet
+]
+
+
+def _make_colors_icon() -> QIcon:
+    """Draw a rainbow-wedge circle for the Colors button — no standard Qt
+    icon fits "color rules", so this one is painted directly."""
+    size = 32
+    pm = QPixmap(size, size)
+    pm.fill(Qt.transparent)
+    painter = QPainter(pm)
+    painter.setRenderHint(QPainter.Antialiasing, True)
+    painter.setPen(Qt.NoPen)
+    margin = 2
+    rect = pm.rect().adjusted(margin, margin, -margin, -margin)
+    span = 360 * 16 // len(_RAINBOW)
+    start = 90 * 16  # 12 o'clock, Qt angles are counter-clockwise
+    for color in _RAINBOW:
+        painter.setBrush(QColor(color))
+        painter.drawPie(rect, start, -span)
+        start -= span
+    painter.end()
+    return QIcon(pm)
+
+
+# Logical name -> generator producing a fully custom-painted QIcon. Checked
+# before _ICON_MAP so an entry here always wins.
+_GENERATED_ICONS: Dict[str, Callable[[], QIcon]] = {
+    "colors": _make_colors_icon,
+}
+
 
 def app_icon(name: str) -> QIcon:
     """Return the QIcon for *name*, or an empty QIcon if unmapped."""
+    generator = _GENERATED_ICONS.get(name)
+    if generator is not None:
+        return generator()
     sp = _ICON_MAP.get(name)
     if sp is None:
         return QIcon()
